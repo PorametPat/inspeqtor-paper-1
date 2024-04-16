@@ -23,12 +23,11 @@ jobs:
               uses: actions/setup-python@v3
               with:
                   python-version: ${{ matrix.python-version }}
-            - name: replace requirements.txt
-              run: sed -i "s/https\/\/:/https:\/\/:PorametPat:${{ secrets.SPECQ_SHARED_ACCESS_TOKEN }}@/g" requirements.txt
             - name: Install dependencies
               run: |
                   python -m pip install --upgrade pip
                   python -m pip install flake8 pytest
+                  git config --global url."https://${{ secrets.SPECQ_SHARED_ACCESS_TOKEN }}@github".insteadOf https://github
                   if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
             - name: Lint with flake8
               run: |
