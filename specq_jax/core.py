@@ -32,9 +32,9 @@ batch_mse = jax.vmap(mse, in_axes=(0, 0))
 
 def loss(
     params,
-    pulse_parameters: Float[Array, "batch num_pulses num_features"],
-    unitaries: Complex[Array, "batch dim dim"],
-    expectation_values: Complex[Array, "batch num_expectations"],
+    pulse_parameters: Float[Array, "batch num_pulses num_features"], # noqa: F722
+    unitaries: Complex[Array, "batch dim dim"], # noqa: F722
+    expectation_values: Complex[Array, "batch num_expectations"], # noqa: F722
     model: nn.Module,
     evaluate_expectation_values: list[specq.ExpectationValue] = specq.default_expectation_values,
 ):
@@ -69,9 +69,9 @@ def create_train_step(
     loss_fn: Callable[
         [
             Array,
-            Float[Array, "batch num_pulses num_features"],
-            Complex[Array, "batch dim dim"],
-            Complex[Array, "batch num_expectations"],
+            Float[Array, "batch num_pulses num_features"], # noqa: F722
+            Complex[Array, "batch dim dim"], # noqa: F722
+            Complex[Array, "batch num_expectations"], # noqa: F722
         ],
         Float[Array, "1"],
     ],
@@ -87,9 +87,9 @@ def create_train_step(
     def train_step(
         params,
         opt_state: optax.OptState,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"],
-        unitaries: Complex[Array, "batch dim dim"],
-        expectations: Complex[Array, "batch num_expectations"],
+        pulse_parameters: Float[Array, "batch num_pulses num_features"], # noqa: F722
+        unitaries: Complex[Array, "batch dim dim"], # noqa: F722
+        expectations: Complex[Array, "batch num_expectations"], # noqa: F722
     ):
         loss, grads = jax.value_and_grad(loss_fn)(
             params, pulse_parameters, unitaries, expectations
@@ -103,9 +103,9 @@ def create_train_step(
     @jax.jit
     def test_step(
         params,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"],
-        unitaries: Complex[Array, "batch dim dim"],
-        expectations: Complex[Array, "batch num_expectations"],
+        pulse_parameters: Float[Array, "batch num_pulses num_features"], # noqa: F722
+        unitaries: Complex[Array, "batch dim dim"], # noqa: F722
+        expectations: Complex[Array, "batch num_expectations"], # noqa: F722
     ):
         loss = loss_fn(params, pulse_parameters, unitaries, expectations)
         return loss

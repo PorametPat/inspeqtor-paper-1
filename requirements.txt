@@ -13,6 +13,7 @@ jaxopt
 torch
 qiskit
 jaxtyping
+matplotlib
 
 # awscli, is not required for the package.
 flake8
