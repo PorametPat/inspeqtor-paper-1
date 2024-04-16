@@ -1,0 +1,340 @@
+import jax.numpy as jnp
+import specq_dev.specq.shared as specq  # type: ignore
+import pennylane as qml  # type: ignore
+from typing import Callable
+import torch
+from torch.utils.data import Dataset
+import numpy as np
+from jaxtyping import Array, Complex, Float
+from flax import linen as nn
+import jax
+import optax  # type: ignore
+import matplotlib.pyplot as plt
+from specq_dev.specq.jax import JaxBasedPulseSequence # type: ignore
+
+
+def calculate_exp(
+    unitary: jnp.ndarray, operator: jnp.ndarray, initial_state: jnp.ndarray
+) -> jnp.ndarray:
+    density_matrix = jnp.outer(initial_state, initial_state.T.conj())
+    rho = jnp.matmul(unitary, jnp.matmul(density_matrix, unitary.T.conj()))
+    temp = jnp.matmul(rho, operator)
+    return jnp.real(jnp.trace(temp))
+
+
+def mse(y_true, y_pred):
+    return jnp.mean(jnp.square(y_true - y_pred))
+
+
+batched_calculate_expectation_value = jax.vmap(calculate_exp, in_axes=(0, 0, None))
+batch_mse = jax.vmap(mse, in_axes=(0, 0))
+
+
+def loss(
+    params,
+    pulse_parameters: Float[Array, "batch num_pulses num_features"],
+    unitaries: Complex[Array, "batch dim dim"],
+    expectation_values: Complex[Array, "batch num_expectations"],
+    model: nn.Module,
+    evaluate_expectation_values: list[specq.ExpectationValue] = specq.default_expectation_values,
+):
+    # Predict Vo for each pauli operator from paluse parameters
+    Wos_params = model.apply(params, pulse_parameters)
+
+    predict_expectation_values = []
+
+    # Calculate expectation values for all cases
+    for idx, exp_case in enumerate(evaluate_expectation_values):
+        Wo = jax.vmap(Wo_2_level, in_axes=(0, 0))(
+            Wos_params[exp_case.observable]["U"], Wos_params[exp_case.observable]["D"]
+        )
+        # Calculate expectation value for each pauli operator
+        batch_expectaion_values = batched_calculate_expectation_value(
+            unitaries,
+            Wo,
+            jnp.array(exp_case.initial_statevector),
+        )
+
+        predict_expectation_values.append(batch_expectaion_values)
+
+    return jnp.mean(
+        batch_mse(expectation_values, jnp.array(predict_expectation_values).T)
+    )
+
+
+def create_train_step(
+    key: jnp.ndarray,
+    model: nn.Module,
+    optimiser: optax.GradientTransformation,
+    loss_fn: Callable[
+        [
+            Array,
+            Float[Array, "batch num_pulses num_features"],
+            Complex[Array, "batch dim dim"],
+            Complex[Array, "batch num_expectations"],
+        ],
+        Float[Array, "1"],
+    ],
+    input_shape: Array,
+):
+    params = model.init(
+        key,
+        jnp.ones(input_shape, jnp.float32),
+    )  # dummy key just as example input
+    opt_state = optimiser.init(params)
+
+    @jax.jit
+    def train_step(
+        params,
+        opt_state: optax.OptState,
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],
+        unitaries: Complex[Array, "batch dim dim"],
+        expectations: Complex[Array, "batch num_expectations"],
+    ):
+        loss, grads = jax.value_and_grad(loss_fn)(
+            params, pulse_parameters, unitaries, expectations
+        )
+
+        updates, opt_state = optimiser.update(grads, opt_state, params)
+        params = optax.apply_updates(params, updates)
+
+        return params, opt_state, loss
+
+    @jax.jit
+    def test_step(
+        params,
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],
+        unitaries: Complex[Array, "batch dim dim"],
+        expectations: Complex[Array, "batch num_expectations"],
+    ):
+        loss = loss_fn(params, pulse_parameters, unitaries, expectations)
+        return loss
+
+    return train_step, test_step, params, opt_state
+
+
+def Wo_2_level(
+    U: jnp.ndarray,
+    D: jnp.ndarray,
+) -> jnp.ndarray:
+
+    alpha = U[0]
+    theta = U[1]
+    beta = U[2]
+
+    lambda_1 = D[0]
+    lambda_2 = D[1]
+
+    q_00 = jnp.exp(1j * alpha) * jnp.cos(theta)
+    q_01 = jnp.exp(1j * beta) * jnp.sin(theta)
+    q_10 = jnp.exp(-1j * beta) * jnp.sin(theta)
+    q_11 = -jnp.exp(-1j * alpha) * jnp.cos(theta)
+
+    Q = jnp.array([[q_00, q_01], [q_10, q_11]])
+
+    D = jnp.array([[lambda_1, 0], [0, lambda_2]])
+
+    return Q @ D @ Q.T.conj()
+
+
+signal = lambda params, t, qubit_freq, total_time_ns: jnp.real(
+    jnp.exp(1j * 2 * jnp.pi * qubit_freq * t)
+    * qml.pulse.pwc((0, total_time_ns))(params, t)
+)
+
+
+def duffling_oscillator_hamiltonian(
+    qubit_info: specq.QubitInformationV3,
+    signal: Callable,
+) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
+    static_hamiltonian = (
+        2
+        * jnp.pi
+        * qubit_info.frequency
+        * qml.jordan_wigner(qml.FermiC(0) * qml.FermiA(0))
+    )
+    drive_hamiltonian = (
+        2
+        * jnp.pi
+        * qubit_info.drive_strength
+        * qml.jordan_wigner(qml.FermiC(0) + qml.FermiA(0))
+    )
+
+    return static_hamiltonian + signal * drive_hamiltonian
+
+
+def rotating_duffling_oscillator_hamiltonian(
+    qubit_info: specq.QubitInformationV3, signal: Callable
+) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
+    a0 = 2 * jnp.pi * qubit_info.frequency
+    a1 = 2 * jnp.pi * qubit_info.drive_strength
+
+    f3 = lambda params, t: a1 * signal(params, t)  # * ((a0 * t / 2)**2)
+    f_sigma_x = lambda params, t: f3(params, t) * jnp.cos(a0 * t)
+    f_sigma_y = lambda params, t: f3(params, t) * jnp.sin(a0 * t)
+
+    return f_sigma_x * qml.PauliX(0) + f_sigma_y * qml.PauliY(0)
+
+
+def transmon_hamiltonian(
+    qubit_info: specq.QubitInformationV3, waveform: Callable
+) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
+    H_0 = qml.pulse.transmon_interaction(
+        qubit_freq=[qubit_info.frequency], connections=[], coupling=[], wires=[0]
+    )
+    H_d0 = qml.pulse.transmon_drive(
+        waveform, 0, qubit_info.frequency, 0
+    )  # NOTE: f2 must be real function.
+
+    return H_0 + H_d0
+
+
+def whitebox(
+    params: jnp.ndarray,
+    t: jnp.ndarray,
+    H: qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian,
+    num_parameterized: int,
+):
+    # Evolve under the Hamiltonian
+    unitary = qml.evolve(H)([params] * num_parameterized, t, return_intermediate=True)
+    # Return the unitary
+    return qml.matrix(unitary)
+
+
+def get_simulator(
+    qubit_info: specq.QubitInformationV3,
+    t_eval: jnp.ndarray,
+):
+    fixed_freq_signal = lambda params, t: signal(
+        params,
+        t,
+        qubit_info.frequency,
+        t_eval[-1],
+    )
+
+    H = rotating_duffling_oscillator_hamiltonian(qubit_info, fixed_freq_signal)
+    num_parameterized = len(H.coeffs_parametrized)
+
+    simulator = lambda params: whitebox(params, t_eval, H, num_parameterized)
+
+    return simulator
+
+
+class SpecQDataset(Dataset):
+    def __init__(
+        self,
+        pulse_parameters: np.ndarray,
+        unitaries: np.ndarray,
+        expectation_values: np.ndarray,
+    ):
+        self.pulse_parameters = torch.from_numpy(pulse_parameters)
+        self.unitaries = torch.from_numpy(unitaries)
+        self.expectation_values = torch.from_numpy(expectation_values)
+
+    def __len__(self):
+        return self.pulse_parameters.shape[0]
+
+    def __getitem__(self, idx):
+        return {
+            # Pulse parameters
+            "x0": self.pulse_parameters[idx],
+            # Unitaries
+            "x1": self.unitaries[idx],
+            # Expectation values
+            "y": self.expectation_values[idx],
+        }
+
+
+def gate_fidelity(U: jnp.ndarray, V: jnp.ndarray) -> jnp.ndarray:
+
+    up = jnp.trace(U.conj().T @ V)
+    down = jnp.sqrt(jnp.trace(U.conj().T @ U) * jnp.trace(V.conj().T @ V))
+
+    return jnp.abs(up / down) ** 2
+
+
+def calculate_expvals(unitaries):
+
+    expvals = []
+    for expectation in specq.default_expectation_values:
+        expvals_time = []
+        for time_step in unitaries:
+            exp = calculate_exp(
+                time_step,
+                expectation.observable_matrix,
+                expectation.initial_statevector,
+            )
+            expvals_time.append(exp)
+
+        expvals.append(expvals_time)
+
+    return jnp.array(expvals)
+
+
+def plot_expvals(expvals):
+    fig, axes = plt.subplots(3, 6, figsize=(20, 10), sharex=True, sharey=True)
+    for i, ax in enumerate(axes.flatten()):
+        ax.plot(expvals[i])
+        ax.set_title(
+            f"{specq.default_expectation_values[i].initial_state}/{specq.default_expectation_values[i].observable}"
+        )
+
+    # Set the ylim to (-1.05, 1.05)
+    for ax in axes.flatten():
+        ax.set_ylim(-1.05, 1.05)
+
+    # Set title for the figure
+    fig.suptitle("Expectation values for the unitaries")
+
+    plt.tight_layout()
+    plt.show()
+
+
+X, Y, Z = (
+    jnp.array(specq.Operator.from_label("X")),
+    jnp.array(specq.Operator.from_label("Y")),
+    jnp.array(specq.Operator.from_label("Z")),
+)
+
+
+def gate_loss(
+    x,
+    model: nn.Module,
+    model_params,
+    simulator,
+    pulse_sequence: JaxBasedPulseSequence,
+    target_unitary,
+):
+    fidelities_dict: dict[str, jnp.ndarray] = {}
+    # x is the pulse parameters in the flattened form
+    # pulse_params = array_to_params_list(x)
+    pulse_params = pulse_sequence.array_to_list_of_params(x)
+
+    # Get the waveforms
+    waveforms = pulse_sequence.get_waveform(pulse_params)
+
+    # Get the unitaries
+    unitaries = simulator(waveforms)
+
+    # Evaluate model to get the Wo parameters
+    Wo_params = model.apply(model_params, jnp.expand_dims(x, 0))
+    # squeeze the Wo_params
+    Wo_params = jax.tree_map(lambda x: jnp.squeeze(x, 0), Wo_params)
+
+    loss = jnp.array(0.0)
+    # Get each Wo for each Pauli operator
+    for pauli_str, pauli_op in zip(["X", "Y", "Z"], [X, Y, Z]):
+        Wo = Wo_2_level(U=Wo_params[pauli_str]["U"], D=Wo_params[pauli_str]["D"])
+        # evaluate the fidleity to the Pauli operator
+        value = gate_fidelity(pauli_op, Wo)
+        fidelities_dict[pauli_str] = value
+
+        loss += (1 - value) ** 2
+
+    gate_fi = gate_fidelity(target_unitary, unitaries[-1])
+    fidelities_dict["gate"] = gate_fi
+
+    # Calculate the loss
+    loss += (1 - gate_fi) ** 2
+
+    return loss
