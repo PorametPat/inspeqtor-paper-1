@@ -15,6 +15,7 @@ qiskit
 jaxtyping
 matplotlib
 orbax-checkpoint
+alive-progress
 
 # awscli, is not required for the package.
 flake8
