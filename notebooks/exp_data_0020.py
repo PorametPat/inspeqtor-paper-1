@@ -1,10 +1,10 @@
-import specq_dev.specq.shared as specq # type: ignore
-from specq_jax.pulse import MultiDragPulse # type: ignore
+import specq_dev.specq.shared as specq  # type: ignore
+from specq_jax.pulse import MultiDragPulse  # type: ignore
 from specq_dev.specq.jax import JaxBasedPulseSequence  # type: ignore
 import jax.numpy as jnp
 import jax
 import numpy as np
-from specq_jax.core import get_simulator
+from specq_jax.core import get_simulator, rotating_duffling_oscillator_hamiltonian
 
 
 def get_multi_drag_pulse_sequence() -> JaxBasedPulseSequence:
@@ -32,9 +32,11 @@ def get_multi_drag_pulse_sequence() -> JaxBasedPulseSequence:
     return pulse_sequence
 
 
-def get_exp_data():
+def get_exp_data(hamiltonian=rotating_duffling_oscillator_hamiltonian):
     # Load the data from the experiment
-    exp_data = specq.ExperimentDataV3.from_folder("../../specq-experiment/datasets/0020")
+    exp_data = specq.ExperimentDataV3.from_folder(
+        "../../specq-experiment/datasets/0020"
+    )
 
     print(f"Loaded data from {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}")
 
@@ -45,7 +47,9 @@ def get_exp_data():
     t_eval = jnp.linspace(
         0, pulse_sequence.pulse_length_dt * dt, pulse_sequence.pulse_length_dt
     )
-    simulator = get_simulator(qubit_info=qubit_info, t_eval=t_eval)
+    simulator = get_simulator(
+        qubit_info=qubit_info, t_eval=t_eval, hamiltonian=hamiltonian
+    )
 
     # Get the waveforms for each pulse parameters to get the unitaries
     waveforms = []
@@ -80,4 +84,11 @@ def get_exp_data():
         f"Finished preparing the data for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
     )
 
-    return exp_data, pulse_parameters, unitaries, expectations, pulse_sequence, simulator
+    return (
+        exp_data,
+        pulse_parameters,
+        unitaries,
+        expectations,
+        pulse_sequence,
+        simulator,
+    )

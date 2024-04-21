@@ -1,0 +1,15 @@
+{
+    "pulses": [
+        {
+            "total_length": 320,
+            "base_amp": 0.25,
+            "base_sigma": 32.02643585205078,
+            "base_beta": -4.844960352865392,
+            "total_amps": 1,
+            "min_amp": 0,
+            "max_amp": 0,
+            "final_amp": 1.0
+        }
+    ],
+    "pulse_length_dt": 320
+}
