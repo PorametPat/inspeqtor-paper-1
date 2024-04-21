@@ -1,9 +1,10 @@
 import jax.numpy as jnp
 import jax
 from dataclasses import dataclass
-from typing import List
+from typing import List, Callable
 from specq_dev.specq.jax import JaxBasedPulse, JaxBasedPulseSequence  # type: ignore
 import specq_dev.specq.shared as specq  # type: ignore
+
 
 def center_location(num_of_pulse_in_dd: int, total_time_dt: int | float):
     center_locations = (
@@ -14,7 +15,8 @@ def center_location(num_of_pulse_in_dd: int, total_time_dt: int | float):
     )  # ideal CPMG pulse locations for x-axis
     return center_locations
 
-def drag_envelope(amp: float, sigma: float, beta: float, center: float):
+
+def drag_envelope(amp: float, sigma: float, beta: float, center: float, final_amp: float | None = None):
 
     # beta is the coefficient of the derivative term
     # beta = 0 is the standard gaussian pulse
@@ -24,8 +26,11 @@ def drag_envelope(amp: float, sigma: float, beta: float, center: float):
     g = lambda t: amp * jnp.exp(-((t - center) ** 2) / (2 * sigma**2))
     f_prime = lambda t: g(t) + 1j * beta * (-1 * (t - center) / sigma**2) * g(t)
 
+    if final_amp is None:
+        final_amp = amp
+
     # return f_prime
-    return lambda t: amp * (f_prime(t) - f_prime(-1)) / (1 - f_prime(-1))
+    return lambda t: final_amp * (f_prime(t) - f_prime(-1)) / (1 - f_prime(-1))
 
 
 @dataclass
@@ -38,6 +43,7 @@ class DragPulse(JaxBasedPulse):
 
     min_amp: float = -1
     max_amp: float = 1
+    final_amp: float | None = None
 
     def __post_init__(self):
         self.t_eval = jnp.arange(self.total_length)
@@ -46,6 +52,7 @@ class DragPulse(JaxBasedPulse):
             sigma=self.base_sigma,
             beta=self.base_beta,
             center=self.total_length // 2,
+            final_amp=self.final_amp,
         )(self.t_eval)
 
     def sample_params(self, key: jnp.ndarray) -> specq.ParametersDictType:
@@ -66,6 +73,20 @@ class DragPulse(JaxBasedPulse):
             params.update(param)
 
         return params
+    
+    def get_bounds(self) -> tuple[specq.ParametersDictType, specq.ParametersDictType]:
+
+        lower = {}    
+        upper = {}
+
+        for i in range(self.total_amps):
+            lower[f"amp/real/{i}"] = self.min_amp
+            lower[f"amp/imag/{i}"] = self.min_amp
+
+            upper[f"amp/real/{i}"] = self.max_amp
+            upper[f"amp/imag/{i}"] = self.max_amp
+
+        return lower, upper
 
     def get_waveform(self, params: specq.ParametersDictType) -> jnp.ndarray:
 
@@ -83,6 +104,7 @@ class DragPulse(JaxBasedPulse):
 
         return amps
 
+
 @dataclass
 class MultiDragPulse(JaxBasedPulse):
     total_length: int
@@ -97,7 +119,7 @@ class MultiDragPulse(JaxBasedPulse):
 
     def __post_init__(self):
         self.t_eval = jnp.arange(self.total_length)
-    
+
     def sample_params(self, key: jnp.ndarray) -> specq.ParametersDictType:
 
         params: specq.ParametersDictType = dict()
@@ -125,6 +147,22 @@ class MultiDragPulse(JaxBasedPulse):
             params.update(param)
 
         return params
+
+    def get_bounds(self) -> tuple[specq.ParametersDictType, specq.ParametersDictType]:
+            
+        lower = {}    
+        upper = {}
+
+        for i in range(self.num_drag):
+            lower[f"{i}/amp"] = self.min_amp
+            lower[f"{i}/sigma"] = self.min_sigma
+            lower[f"{i}/beta"] = self.min_beta
+
+            upper[f"{i}/amp"] = self.max_amp
+            upper[f"{i}/sigma"] = self.max_sigma
+            upper[f"{i}/beta"] = self.max_beta
+
+        return lower, upper
 
     def get_waveform(self, params: specq.ParametersDictType) -> jnp.ndarray:
 

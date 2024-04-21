@@ -1,0 +1,104 @@
+{
+    "qubits": [
+        {
+            "unit": "GHz",
+            "qubit_idx": 0,
+            "anharmonicity": -0.20640003780600244,
+            "frequency": 5.243548040142894,
+            "drive_strength": 0.1121099050525905,
+            "date": "2024-04-19 19:38:13"
+        }
+    ],
+    "expectation_values_order": [
+        {
+            "initial_state": "+",
+            "observable": "X"
+        },
+        {
+            "initial_state": "-",
+            "observable": "X"
+        },
+        {
+            "initial_state": "r",
+            "observable": "X"
+        },
+        {
+            "initial_state": "l",
+            "observable": "X"
+        },
+        {
+            "initial_state": "0",
+            "observable": "X"
+        },
+        {
+            "initial_state": "1",
+            "observable": "X"
+        },
+        {
+            "initial_state": "+",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "-",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "r",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "l",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "0",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "1",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "+",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "-",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "r",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "l",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "0",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "1",
+            "observable": "Z"
+        }
+    ],
+    "parameter_names": [],
+    "backend_name": "ibm_kawasaki",
+    "shots": 3000,
+    "EXPERIMENT_IDENTIFIER": "whitebox_test_0001",
+    "EXPERIMENT_TAGS": [
+        "whitebox_test",
+        "DRAG"
+    ],
+    "description": "Whitebox test with DRAG pulse",
+    "device_cycle_time_ns": 0.2222222222222222,
+    "sequence_duration_dt": 320,
+    "instance": "utokyo-kawasaki/keio-internal/keio-students",
+    "sample_size": 306,
+    "date": "2024-04-19 19:38:13",
+    "additional_info": {
+        "pulse_class": "DragPulse",
+        "num_pulses": 1
+    }
+}

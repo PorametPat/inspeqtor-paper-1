@@ -14,6 +14,7 @@ torch
 qiskit
 jaxtyping
 matplotlib
+orbax-checkpoint
 
 # awscli, is not required for the package.
 flake8

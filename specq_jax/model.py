@@ -9,7 +9,6 @@ class BasicBlackBox(nn.Module):
     hidden_sizes_2: Sequence[int] = (20, 10)
     pauli_operators: Sequence[str] = ("X", "Y", "Z")
 
-    activation: Callable = nn.tanh
     NUM_UNITARY_PARAMS: int = 3
     NUM_DIAGONAL_PARAMS: int = 2
 
@@ -42,7 +41,7 @@ class BasicBlackBox(nn.Module):
             # For the diagonal part, we use a dense layer with 1 feature
             diag_params = nn.Dense(features=self.NUM_DIAGONAL_PARAMS)(_x)
             # Apply the activation function
-            diag_params = self.activation(diag_params)
+            diag_params = nn.tanh(diag_params)
 
             Wos_params[op] = {
                 "U": unitary_params,
