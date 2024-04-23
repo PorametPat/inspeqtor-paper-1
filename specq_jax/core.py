@@ -208,7 +208,7 @@ def rotating_transmon_hamiltonian(
 
     f3 = lambda params, t: a1 * signal(params, t)
     f_sigma_x = lambda params, t: f3(params, t) * jnp.cos(a0 * t)
-    f_sigma_y = lambda params, t: -1 * f3(params, t) * jnp.sin(a0 * t) / 2  # NOTE: WHY?
+    f_sigma_y = lambda params, t: -1 * f3(params, t) * jnp.sin(a0 * t)   # NOTE: WHY?
 
     return f_sigma_x * qml.PauliX(0) + f_sigma_y * qml.PauliY(0)
 
@@ -317,6 +317,41 @@ def plot_expvals(expvals):
 
     plt.tight_layout()
     plt.show()
+
+def plot_expvals_v2(expvals):
+    fig, axes = plt.subplot_mosaic(
+        """
+        +r0
+        -l1
+        """,
+        figsize=(10, 5),
+        sharex=True,
+        sharey=True,
+    )
+
+    expvals_dict = {}
+    for idx, exp in enumerate(specq.default_expectation_values):
+
+        if exp.initial_state not in expvals_dict:
+            expvals_dict[exp.initial_state] = {}
+
+        expvals_dict[exp.initial_state][exp.observable] = expvals[idx]
+    
+    for idx, (initial_state, expvals) in enumerate(expvals_dict.items()):
+        ax = axes[initial_state]
+        for observable, expval in expvals.items():
+            ax.plot(expval, label=observable)
+        ax.set_title(f"Initial state: {initial_state}")
+        ax.set_ylim(-1.05, 1.05)
+        ax.legend()
+
+
+    # Set title for the figure
+    fig.suptitle("Expectation values for the unitaries")
+
+    plt.tight_layout()
+
+    return fig
 
 
 X, Y, Z = (
