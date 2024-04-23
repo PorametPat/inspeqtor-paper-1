@@ -101,7 +101,7 @@ def save_model(
         model_params=model_params,
     )
 
-    model_state.save(_path + "/model_state.pkl")
+    model_state.save(_path + "/model_state")
 
     # Save the history
     hist_df = pd.DataFrame(history)

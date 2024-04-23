@@ -90,3 +90,6 @@ target/
 
 # Pytest
 .pytest_cache/
+
+# model
+ckpts/
