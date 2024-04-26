@@ -18,6 +18,7 @@ orbax-checkpoint
 alive-progress
 qiskit-aer
 qiskit_ibm_runtime
+qiskit_experiments
 
 # awscli, is not required for the package.
 flake8
