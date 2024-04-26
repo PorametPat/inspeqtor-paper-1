@@ -1,5 +1,5 @@
-import specq_dev.specq.shared as specq  # type: ignore
-import specq_dev.specq.jax as specq_jax  # type: ignore
+import specq_dev.shared as specq  # type: ignore
+import specq_dev.jax as specq_jax  # type: ignore
 from specq_jax.core import get_simulator, rotating_duffling_oscillator_hamiltonian
 import jax.numpy as jnp
 import jax
@@ -7,7 +7,6 @@ from typing import Callable
 import logging
 import numpy as np
 
-import pickle
 from dataclasses import dataclass, asdict
 import os
 import datetime

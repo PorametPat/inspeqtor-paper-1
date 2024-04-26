@@ -1,0 +1,14 @@
+{
+    "include": [
+        "."
+    ],
+    "exclude": [
+        "**/.pytest_cache",
+        "**/.vscode",
+        "**/__pycache__",
+        "**/mypy_cache",
+        "**/experiments",
+        "**/notebooks",
+    ],
+    "reportMissingImports": true,
+}

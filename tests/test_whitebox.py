@@ -1,11 +1,10 @@
 import pytest
-from specq_dev.specq.jax import JaxBasedPulseSequence  # type: ignore
-from specq_dev.specq.shared import QubitInformationV3  # type: ignore
+from specq_dev.jax import JaxBasedPulseSequence # type: ignore
+from specq_dev.shared import QubitInformationV3 # type: ignore
 from specq_jax.pulse import MultiDragPulse
 from specq_jax.core import get_simulator
 import jax
 import jax.numpy as jnp
-
 
 def get_multi_drag_pulse_sequence() -> JaxBasedPulseSequence:
 
@@ -30,7 +29,6 @@ def get_multi_drag_pulse_sequence() -> JaxBasedPulseSequence:
     )
 
     return pulse_sequence
-
 
 def test_run():
 

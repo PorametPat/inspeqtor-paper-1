@@ -93,3 +93,6 @@ target/
 
 # model
 ckpts/
+
+notebooks/
+experiments/

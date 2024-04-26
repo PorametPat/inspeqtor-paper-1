@@ -16,6 +16,7 @@ jaxtyping
 matplotlib
 orbax-checkpoint
 alive-progress
+qiskit-aer
 
 # awscli, is not required for the package.
 flake8
@@ -24,3 +25,4 @@ pytest
 # ipykernel for jupyter notebooks
 ipykernel 
 ipytest
+ipywidgets
