@@ -1,10 +1,8 @@
 import jax.numpy as jnp
 import jax
 from dataclasses import dataclass
-from typing import List, Callable
-from specq_dev.specq.jax import JaxBasedPulse, JaxBasedPulseSequence  # type: ignore
-import specq_dev.specq.shared as specq  # type: ignore
-
+from specq_dev.jax import JaxBasedPulse  # type: ignore
+import specq_dev.shared as specq  # type: ignore
 
 def center_location(num_of_pulse_in_dd: int, total_time_dt: int | float):
     center_locations = (

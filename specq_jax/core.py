@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-import specq_dev.specq.shared as specq  # type: ignore
+import specq_dev.shared as specq  # type: ignore
 import pennylane as qml  # type: ignore
 from typing import Callable
 import torch
@@ -10,11 +10,12 @@ from flax import linen as nn
 import jax
 import optax  # type: ignore
 import matplotlib.pyplot as plt
-from specq_dev.specq.jax import JaxBasedPulseSequence  # type: ignore
+from specq_dev.jax import JaxBasedPulseSequence  # type: ignore
 import pandas as pd
 from alive_progress import alive_bar # type: ignore
 from jaxopt import ProjectedGradient # type: ignore
 from jaxopt.projection import projection_box # type: ignore
+import rich.progress as rprogress
 
 def calculate_exp(
     unitary: jnp.ndarray, operator: jnp.ndarray, initial_state: jnp.ndarray
@@ -79,7 +80,7 @@ def create_train_step(
         ],
         Float[Array, "1"],
     ],
-    input_shape: Array,
+    input_shape: tuple[int, int] 
 ):
     params = model.init(
         key,
@@ -459,6 +460,74 @@ def with_validation_train(
 
 
     return model_params, opt_state, history
+
+
+def with_validation_train_v2(
+    train_dataloader: DataLoader,
+    val_dataloader: DataLoader,
+    train_step,
+    test_step,
+    model_params,
+    opt_state,
+    num_epochs=1250,
+):
+
+    history = []
+    total_len = len(train_dataloader)
+
+    NUM_EPOCHS = num_epochs
+
+    with rprogress.Progress(
+        rprogress.TimeElapsedColumn(),
+        rprogress.TextColumn("[progress.description]{task.description}"),
+        transient=False,
+    ) as main_progress:
+
+        training_loop_task_id = main_progress.add_task(
+            description="Training loop", total=int(NUM_EPOCHS * total_len)
+        )
+
+        for epoch in range(NUM_EPOCHS):
+            total_loss = 0.0
+            for i, batch in enumerate(train_dataloader):
+
+                _pulse_parameters = batch["x0"].numpy()
+                _unitaries = batch["x1"].numpy()
+                _expectations = batch["y"].numpy()
+
+                model_params, opt_state, loss = train_step(
+                    model_params, opt_state, _pulse_parameters, _unitaries, _expectations
+                )
+
+                history.append(
+                    {
+                        "epoch": epoch,
+                        "step": i,
+                        "loss": float(loss),
+                        "global_step": epoch * total_len + i,
+                        "val_loss": None,
+                    }
+                )
+
+                total_loss += loss
+
+                # update the progress bar
+                main_progress.update(training_loop_task_id, completed=i + 1)
+
+            # Validation
+            val_loss = 0.0
+            for i, batch in enumerate(val_dataloader):
+
+                _pulse_parameters = batch["x0"].numpy()
+                _unitaries = batch["x1"].numpy()
+                _expectations = batch["y"].numpy()
+
+                val_loss += test_step(model_params, _pulse_parameters, _unitaries, _expectations)
+
+            history[-1]["val_loss"] = float(val_loss / len(val_dataloader))
+
+    return model_params, opt_state, history
+
 
 def plot_history(history: list):
 
