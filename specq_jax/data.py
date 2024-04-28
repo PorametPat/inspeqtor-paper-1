@@ -1,5 +1,6 @@
 import specq_dev.shared as specq  # type: ignore
 import specq_dev.jax as specq_jax  # type: ignore
+from specq_dev.jax.pulse import construct_pulse_sequence_reader # type: ignore
 from specq_jax.core import get_simulator, rotating_duffling_oscillator_hamiltonian
 import jax.numpy as jnp
 import jax
@@ -13,6 +14,8 @@ import datetime
 import json
 from typing import Union, Callable
 import pandas as pd 
+from .pulse import MultiDragPulse, DragPulse
+from specq_dev.test_utils import JaxDragPulse # type: ignore
 
 def generate_path_with_datetime(sub_dir: Union[str, None] = None):
     return os.path.join(
@@ -128,20 +131,33 @@ def load_model(path: str):
         data_config,
     )
 
+def calculate_unitaries(
+    pulse_sequence: specq.BasePulseSequence,
+):
+
+    return
+
+
+pulse_reader = construct_pulse_sequence_reader(
+    pulses=[
+        MultiDragPulse, DragPulse, JaxDragPulse
+    ]
+)
+
 def load_data(
     path: str,
-    get_pulse_sequence: Callable[[], specq_jax.JaxBasedPulseSequence],
     hamiltonian=rotating_duffling_oscillator_hamiltonian,
 ):
     # Load the data from the experiment
-    exp_data = specq.ExperimentDataV3.from_folder(path)
+    exp_data = specq.ExperimentData.from_folder(path)
 
     logging.info(f"Loaded data from {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}")
 
     # Setup the simulator
     dt = exp_data.experiment_config.device_cycle_time_ns
     qubit_info = exp_data.experiment_config.qubits[0]
-    pulse_sequence = get_pulse_sequence()
+    # pulse_sequence = get_pulse_sequence()
+    pulse_sequence = pulse_reader(path)
     t_eval = jnp.linspace(
         0, pulse_sequence.pulse_length_dt * dt, pulse_sequence.pulse_length_dt
     )
@@ -160,6 +176,14 @@ def load_data(
         f"Prepared the waveforms for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
     )
 
+    # Check if the unitaries are already calculated
+    # if os.path.exists(f"{path}/unitaries.npy"):
+    #     unitaries = np.load(f"{path}/unitaries.npy")
+    #     logging.info(
+    #         f"Loaded the unitaries for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
+    #     )
+    # else:
+
     # jit the simulator
     jitted_simulator = jax.jit(simulator)
     # batch the simulator
@@ -173,6 +197,9 @@ def load_data(
 
     # Get the final unitaries
     unitaries = np.array(unitaries[:, -1, :, :])
+        # Save the unitaries
+        # np.save(f"{path}/unitaries.npy", unitaries)
+
     # Get the expectation values from the experiment
     expectations = exp_data.get_expectation_values()
     # Get the pulse parameters

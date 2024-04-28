@@ -1,6 +1,6 @@
 import pytest
 from specq_dev.jax import JaxBasedPulseSequence # type: ignore
-from specq_dev.shared import QubitInformationV3 # type: ignore
+from specq_dev.shared import QubitInformation # type: ignore
 from specq_jax.pulse import MultiDragPulse
 from specq_jax.core import get_simulator
 import jax
@@ -34,7 +34,7 @@ def test_run():
 
     batch_size = 10
     key = jax.random.PRNGKey(0)
-    qubit_info = QubitInformationV3(
+    qubit_info = QubitInformation(
         unit="GHz",
         qubit_idx=0,
         anharmonicity=-0.33,

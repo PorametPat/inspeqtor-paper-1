@@ -155,7 +155,7 @@ signal_with_phase = lambda params, t, qubit_freq, total_time_ns: jnp.real(
 
 
 def duffling_oscillator_hamiltonian(
-    qubit_info: specq.QubitInformationV3,
+    qubit_info: specq.QubitInformation,
     signal: Callable,
 ) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
     static_hamiltonian = (
@@ -175,7 +175,7 @@ def duffling_oscillator_hamiltonian(
 
 
 def rotating_duffling_oscillator_hamiltonian(
-    qubit_info: specq.QubitInformationV3, signal: Callable
+    qubit_info: specq.QubitInformation, signal: Callable
 ) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
     a0 = 2 * jnp.pi * qubit_info.frequency
     a1 = 2 * jnp.pi * qubit_info.drive_strength
@@ -188,7 +188,7 @@ def rotating_duffling_oscillator_hamiltonian(
 
 
 def transmon_hamiltonian(
-    qubit_info: specq.QubitInformationV3, waveform: Callable
+    qubit_info: specq.QubitInformation, waveform: Callable
 ) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
     H_0 = qml.pulse.transmon_interaction(
         qubit_freq=[qubit_info.frequency], connections=[], coupling=[], wires=[0]
@@ -201,7 +201,7 @@ def transmon_hamiltonian(
 
 
 def rotating_transmon_hamiltonian(
-    qubit_info: specq.QubitInformationV3, signal: Callable
+    qubit_info: specq.QubitInformation, signal: Callable
 ):
 
     a0 = 2 * jnp.pi * qubit_info.frequency
@@ -227,10 +227,10 @@ def whitebox(
 
 
 def get_simulator(
-    qubit_info: specq.QubitInformationV3,
+    qubit_info: specq.QubitInformation,
     t_eval: jnp.ndarray,
     hamiltonian: Callable[
-        [specq.QubitInformationV3, Callable],
+        [specq.QubitInformation, Callable],
         qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian,
     ] = rotating_duffling_oscillator_hamiltonian,
 ):
@@ -412,6 +412,7 @@ def with_validation_train(
     model_params,
     opt_state,
     num_epochs=1250,
+    force_tty=True,
 ):
 
     history = []
@@ -419,7 +420,7 @@ def with_validation_train(
 
     NUM_EPOCHS = num_epochs
 
-    with alive_bar(int(NUM_EPOCHS * total_len), force_tty=True) as bar:
+    with alive_bar(int(NUM_EPOCHS * total_len), force_tty=force_tty) as bar:
         for epoch in range(NUM_EPOCHS):
             total_loss = 0.0
             for i, batch in enumerate(train_dataloader):
