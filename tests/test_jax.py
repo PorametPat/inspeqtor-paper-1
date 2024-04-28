@@ -1,24 +1,36 @@
-
 from qiskit_ibm_runtime.fake_provider import FakeJakartaV2  # type: ignore
-from specq_dev import qiskit as specq_qiskit, shared # type: ignore
-from specq_dev.jax import JaxBasedPulseSequence # type: ignore
-from specq_dev.test_utils import get_jax_based_pulse_sequence # type: ignore
+from specq_dev import qiskit as specq_qiskit, shared  # type: ignore
+from specq_dev.jax import JaxBasedPulseSequence  # type: ignore
+from specq_dev.test_utils import get_jax_based_pulse_sequence  # type: ignore
 import jax
 import jax.numpy as jnp
 
 from qiskit_ibm_runtime import SamplerV2, SamplerV1, Options  # type: ignore
 
-from specq_jax import core, data, model as specq_model  # type: ignore
+from specq_jax import core, data, model as specq_model, pulse  # type: ignore
 
 from torch import Generator
 from torch.utils.data import DataLoader, Subset
-import optax # type: ignore
+import optax  # type: ignore
 from dataclasses import asdict
 import logging
+import pytest
+from rich import inspect
 
-from pathlib import Path
+def test_pulse_reader(tmp_path):
 
+    pulse_sequence = get_jax_based_pulse_sequence()
+    pulse_sequence.to_file(str(tmp_path))
+
+    reread_pulse_sequence = data.pulse_reader(str(tmp_path))
+
+    assert reread_pulse_sequence == pulse_sequence
+
+# @pytest.mark.skip(reason="Need to fix the test")
 def test_end_to_end(tmp_path):
+
+    d = tmp_path / "data"
+    d.mkdir()
 
     EXPERIMENT_IDENTIFIER = "0021"
     SHOTS = 3000
@@ -43,8 +55,9 @@ def test_end_to_end(tmp_path):
     logging.debug(f"Backend properties: {backend_properties}")
 
     pulse_sequence = get_jax_based_pulse_sequence()
+    pulse_sequence.to_file(str(d))
 
-    config = shared.ExperimentConfigV3(
+    config = shared.ExperimentConfiguration(
         qubits=[qubit_info],
         expectation_values_order=shared.default_expectation_values,
         parameter_names=pulse_sequence.get_parameter_names(),
@@ -99,25 +112,24 @@ def test_end_to_end(tmp_path):
         df, backend_properties, options, transpiled_circuits, service, Sampler
     )
 
-    _jobs, is_all_done, is_error = specq_qiskit.check_jobs_status(execute_dataframe, service=service, jobs=jobs)
+    _jobs, is_all_done, is_error = specq_qiskit.check_jobs_status(
+        execute_dataframe, service=service, jobs=jobs
+    )
 
     result_df = specq_qiskit.get_result_from_remote(execute_dataframe, jobs)
 
-
-    exp_data = shared.ExperimentDataV3(
+    exp_data = shared.ExperimentData(
         experiment_config=config,
         preprocess_data=result_df,
     )
 
     # Test the save and load
-    d = tmp_path / "data"
-    d.mkdir()
+
     exp_data.save_to_folder(path=str(d))
 
     exp_data, pulse_parameters, unitaries, expectations, pulse_sequence, simulator = (
         data.load_data(
             str(d),
-            get_jax_based_pulse_sequence,
             core.rotating_transmon_hamiltonian,
         )
     )
@@ -135,9 +147,9 @@ def test_end_to_end(tmp_path):
 
     # Final goal of setting up is to create a dataset and a dataloader
     dataset = core.SpecQDataset(
-        pulse_parameters=pulse_parameters[start_idx: end_idx],
-        unitaries=unitaries[start_idx: end_idx],
-        expectation_values=expectations[start_idx: end_idx],
+        pulse_parameters=pulse_parameters[start_idx:end_idx],
+        unitaries=unitaries[start_idx:end_idx],
+        expectation_values=expectations[start_idx:end_idx],
     )
 
     # Randomly split dataset into training and validation
@@ -145,15 +157,17 @@ def test_end_to_end(tmp_path):
         random_split_key, len(dataset), (int(0.2 * len(dataset)),), replace=False
     ).tolist()
 
-    training_indices = list(
-        set([i for i in range(len(dataset))]) - set(val_indices)
-    )
+    training_indices = list(set([i for i in range(len(dataset))]) - set(val_indices))
 
     train_dataset = Subset(dataset, training_indices)
     val_dataset = Subset(dataset, val_indices)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, generator=g)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, generator=g)
+    train_dataloader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, generator=g
+    )
+    val_dataloader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=True, generator=g
+    )
 
     model = specq_model.BasicBlackBox(feature_size=5)
 
@@ -194,6 +208,7 @@ def test_end_to_end(tmp_path):
         test_step,
         model_params,
         opt_state,
+        num_epochs=2,
     )
 
     MODEL_PATH = tmp_path / "ckpts/"
@@ -209,3 +224,96 @@ def test_end_to_end(tmp_path):
         history,
         with_auto_datetime=False,
     )
+
+    target_unitary = jax.scipy.linalg.sqrtm(core.X)
+    fun = lambda x: core.gate_loss(
+        x,
+        model,
+        model_params,
+        simulator,
+        pulse_sequence,
+        target_unitary,
+    )
+
+    lower, upper = pulse_sequence.get_bounds()
+    lower = pulse_sequence.list_of_params_to_array(lower)
+    upper = pulse_sequence.list_of_params_to_array(upper)
+
+    pulse_params = pulse_sequence.sample_params(gate_optim_key)
+    x0 = pulse_sequence.list_of_params_to_array(pulse_params)
+
+    opt_params, state = core.optimize(x0, lower, upper, fun)
+
+    # Plot the optmized result
+    opt_pulse_params = pulse_sequence.array_to_list_of_params(opt_params)
+    pulse_sequence.draw(opt_pulse_params)
+
+    # Calculate the expectation values
+    waveform_opt = pulse_sequence.get_waveform(opt_pulse_params)
+    unitaries_opt = simulator(waveform_opt)
+
+    Wos_predicted_dict = core.evalulate_model_to_pauli(
+        model, model_params, jnp.expand_dims(opt_params, 0)
+    )
+
+    performance = {
+        "X": float(Wos_predicted_dict["X"][0]),
+        "Y": float(Wos_predicted_dict["Y"][0]),
+        "Z": float(Wos_predicted_dict["Z"][0]),
+        "gate": float(core.gate_fidelity(unitaries_opt[-1], target_unitary)),
+    }
+
+    print("Benchmarking the gate")
+
+    qc = specq_qiskit.get_circuit(
+        initial_state="0",
+        waveforms=waveform_opt,
+        observable="Z",
+        backend=backend,
+        q_idx=0,
+        add_pulse=True,
+        change_basis=False,
+        add_measure=False,
+        enable_MCMD=False,
+    )
+
+    logging.info("Skip the process tomography for now")
+
+    # qpt = ProcessTomography(qc, backend=backend, physical_qubits=[0])
+
+    # print("Executing process tomography experiment")
+
+    # qpt_job = qpt.run(backend=backend)
+    # qpt_results = qpt_job.block_for_results()
+
+    # qpt_value = qpt_results.analysis_results(0).value
+
+    # fidelity_qpt_predicted = average_gate_fidelity(
+    #     qpt_value, Operator(np.array(unitaries_opt[-1]))
+    # )
+    # fidelity_qpt_target = average_gate_fidelity(
+    #     qpt_value, Operator(np.array(target_unitary))
+    # )
+
+    # performance["fidelity_qpt_predicted"] = fidelity_qpt_predicted
+    # performance["fidelity_qpt_target"] = fidelity_qpt_target
+
+    # print("Save the process tomography data to the folder")
+
+    # # Save in analysis folder using numpy
+    # os.makedirs("analysis", exist_ok=True)
+
+    # try:
+    #     np.save("analysis/qpt_value.npy", qpt_value)
+    # except Exception as e:
+    #     print(e)
+    #     print("Failed to save the QPT data")
+
+    # # Save the performance to the analysis folder in json
+    # try:
+    #     with open("analysis/performance.json", "w") as f:
+    #         json.dump(performance, f)
+    # except Exception as e:
+    #     print(e)
+    #     print("Failed to save the performance data")
+    
