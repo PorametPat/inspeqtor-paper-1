@@ -1,21 +1,73 @@
+import jax
 import jax.numpy as jnp
 import specq_dev.shared as specq  # type: ignore
 import pennylane as qml  # type: ignore
-from typing import Callable
-import torch
+from typing import Callable, Union, Protocol, Any
 from torch.utils.data import Dataset, DataLoader
-import numpy as np
 from jaxtyping import Array, Complex, Float
 from flax import linen as nn
-import jax
 import optax  # type: ignore
 import matplotlib.pyplot as plt
 from specq_dev.jax import JaxBasedPulseSequence  # type: ignore
 import pandas as pd
-from alive_progress import alive_bar # type: ignore
-from jaxopt import ProjectedGradient # type: ignore
-from jaxopt.projection import projection_box # type: ignore
-import rich.progress as rprogress
+from alive_progress import alive_bar  # type: ignore
+from jaxopt import ProjectedGradient  # type: ignore
+from jaxopt.projection import projection_box  # type: ignore
+from dataclasses import dataclass
+from flax.typing import VariableDict
+from .simulator import SimulatorFnV2, SignalParameters
+from specq_dev.shared import ParametersDictType
+
+class LossFn(Protocol):
+
+    def __call__(
+        self,
+        params: VariableDict,
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
+        unitaries: Complex[Array, "batch dim dim"],
+        expectation_values: Float[Array, "batch num_expectations"],
+        training: bool,
+    ) -> Float[Array, "1"]: ...
+
+
+class TrainStepFn(Protocol):
+
+    def __call__(
+        self,
+        params: VariableDict,
+        opt_state: optax.OptState,
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],
+        unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
+        expectations: Float[Array, "batch num_expectations"],  # noqa: F722
+        dropout_key: jnp.ndarray,
+    ) -> tuple[Any, Any, float]: ...
+
+
+class TestStepFn(Protocol):
+
+    def __call__(
+        self,
+        params: VariableDict,
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],
+        unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
+        expectations: Float[Array, "batch num_expectations"],  # noqa: F722
+    ) -> float: ...
+
+
+
+@dataclass
+class History:
+    epoch: int
+    step: int
+    loss: float
+    global_step: int
+    val_loss: float | None = None
+
+
+class CallbackFn(Protocol):
+    def __call__(self, history: History) -> None: ...
+
+
 
 def calculate_exp(
     unitary: jnp.ndarray, operator: jnp.ndarray, initial_state: jnp.ndarray
@@ -34,23 +86,16 @@ batched_calculate_expectation_value = jax.vmap(calculate_exp, in_axes=(0, 0, Non
 batch_mse = jax.vmap(mse, in_axes=(0, 0))
 
 
-def loss(
-    params,
-    pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
-    unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
-    expectation_values: Complex[Array, "batch num_expectations"],  # noqa: F722
-    model: nn.Module,
-    evaluate_expectation_values: list[
-        specq.ExpectationValue
-    ] = specq.default_expectation_values,
-):
-    # Predict Vo for each pauli operator from paluse parameters
-    Wos_params = model.apply(params, pulse_parameters)
+def get_predict_expectation_value(
+    Wos_params: dict[str, dict[str, jnp.ndarray]],
+    unitaries: jnp.ndarray,
+    evaluate_expectation_values: list[specq.ExpectationValue],
+) -> jnp.ndarray:
 
     predict_expectation_values = []
 
     # Calculate expectation values for all cases
-    for idx, exp_case in enumerate(evaluate_expectation_values):
+    for _, exp_case in enumerate(evaluate_expectation_values):
         Wo = jax.vmap(Wo_2_level, in_axes=(0, 0))(
             Wos_params[exp_case.observable]["U"], Wos_params[exp_case.observable]["D"]
         )
@@ -63,41 +108,98 @@ def loss(
 
         predict_expectation_values.append(batch_expectaion_values)
 
-    return jnp.mean(
-        batch_mse(expectation_values, jnp.array(predict_expectation_values).T)
+    return jnp.array(predict_expectation_values)
+
+
+def inner_loss(Wos_params, unitaries, expectation_values, evaluate_expectation_values):
+
+    predict_expectation_values = get_predict_expectation_value(
+        Wos_params=Wos_params,
+        unitaries=unitaries,
+        evaluate_expectation_values=evaluate_expectation_values,
     )
+
+    return jnp.mean(batch_mse(expectation_values, predict_expectation_values.T))
+
+
+def loss_fn_with_dropout(
+    params: VariableDict,
+    pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
+    unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
+    expectation_values: Complex[Array, "batch num_expectations"],  # noqa: F722
+    training: bool,
+    dropout_key: jnp.ndarray,
+    model: nn.Module,
+    evaluate_expectation_values: list[
+        specq.ExpectationValue
+    ] = specq.default_expectation_values,
+):
+    # Predict Vo for each pauli operator from paluse parameters
+    Wos_params = model.apply(
+        params, pulse_parameters, training=training, rngs={"dropout": dropout_key}
+    )
+
+    return inner_loss(
+        Wos_params=Wos_params,
+        unitaries=unitaries,
+        expectation_values=expectation_values,
+        evaluate_expectation_values=evaluate_expectation_values,
+    )
+
+
+def loss_fn(
+    params: VariableDict,
+    pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
+    unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
+    expectation_values: Complex[Array, "batch num_expectations"],  # noqa: F722
+    training: bool,
+    model: nn.Module,
+    evaluate_expectation_values: list[
+        specq.ExpectationValue
+    ] = specq.default_expectation_values,
+):
+    # Predict Vo for each pauli operator from paluse parameters
+    Wos_params = model.apply(params, pulse_parameters, training=training)
+
+    return inner_loss(
+        Wos_params=Wos_params,
+        unitaries=unitaries,
+        expectation_values=expectation_values,
+        evaluate_expectation_values=evaluate_expectation_values,
+    )
+
+
 
 def create_train_step(
     key: jnp.ndarray,
     model: nn.Module,
     optimiser: optax.GradientTransformation,
-    loss_fn: Callable[
-        [
-            Array,
-            Float[Array, "batch num_pulses num_features"],  # noqa: F722
-            Complex[Array, "batch dim dim"],  # noqa: F722
-            Complex[Array, "batch num_expectations"],  # noqa: F722
-        ],
-        Float[Array, "1"],
-    ],
-    input_shape: tuple[int, int] 
+    input_shape: tuple[int, int],
 ):
     params = model.init(
         key,
         jnp.ones(input_shape, jnp.float32),
+        training=False,
     )  # dummy key just as example input
     opt_state = optimiser.init(params)
 
     @jax.jit
     def train_step(
-        params,
+        params: VariableDict,
         opt_state: optax.OptState,
         pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Complex[Array, "batch num_expectations"],  # noqa: F722
+        dropout_key: jnp.ndarray,
     ):
-        loss, grads = jax.value_and_grad(loss_fn)(
-            params, pulse_parameters, unitaries, expectations
+        loss, grads = jax.value_and_grad(loss_fn_with_dropout)(
+            params,
+            pulse_parameters,
+            unitaries,
+            expectations,
+            True,
+            dropout_key,
+            model=model,
         )
 
         updates, opt_state = optimiser.update(grads, opt_state, params)
@@ -107,12 +209,19 @@ def create_train_step(
 
     @jax.jit
     def test_step(
-        params,
+        params: VariableDict,
         pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Complex[Array, "batch num_expectations"],  # noqa: F722
     ):
-        loss = loss_fn(params, pulse_parameters, unitaries, expectations)
+        loss = loss_fn(
+            params,
+            pulse_parameters,
+            unitaries,
+            expectations,
+            training=False,
+            model=model,
+        )
         return loss
 
     return train_step, test_step, params, opt_state
@@ -137,142 +246,170 @@ def Wo_2_level(
 
     Q = jnp.array([[q_00, q_01], [q_10, q_11]])
 
-    D = jnp.array([[lambda_1, 0], [0, lambda_2]])
+    _D = jnp.array([[lambda_1, 0], [0, lambda_2]])
 
-    return Q @ D @ Q.T.conj()
+    return Q @ _D @ Q.T.conj()
 
 
-signal = lambda params, t, phase, qubit_freq, total_time_ns: jnp.real(
-    jnp.exp(1j * (2 * jnp.pi * qubit_freq * t + phase))
-    * qml.pulse.pwc((0, total_time_ns))(params, t)
+def with_validation_train(
+    train_dataloader: DataLoader,
+    val_dataloader: DataLoader,
+    train_step: TrainStepFn,
+    test_step: TestStepFn,
+    model_params: VariableDict,
+    opt_state: optax.OptState,
+    dropout_key: jnp.ndarray,
+    num_epochs=1250,
+    force_tty=True,
+    callback: Union[CallbackFn, None] = None,
+):
+
+    history = []
+    total_len = len(train_dataloader)
+
+    NUM_EPOCHS = num_epochs
+
+    with alive_bar(int(NUM_EPOCHS * total_len), force_tty=force_tty) as bar:
+        for epoch in range(NUM_EPOCHS):
+            total_loss = 0.0
+            for i, batch in enumerate(train_dataloader):
+
+                key, dropout_key = jax.random.split(dropout_key)
+
+                _pulse_parameters = batch["x0"].numpy()
+                _unitaries = batch["x1"].numpy()
+                _expectations = batch["y"].numpy()
+
+                model_params, opt_state, loss = train_step(
+                    model_params,
+                    opt_state,
+                    _pulse_parameters,
+                    _unitaries,
+                    _expectations,
+                    key,
+                )
+
+                history.append(
+                    History(
+                        epoch=epoch,
+                        step=i,
+                        loss=float(loss),
+                        global_step=epoch * total_len + i,
+                    )
+                )
+
+                total_loss += loss
+
+                bar()
+
+            # Validation
+            val_loss = 0.0
+            for i, batch in enumerate(val_dataloader):
+
+                _pulse_parameters = batch["x0"].numpy()
+                _unitaries = batch["x1"].numpy()
+                _expectations = batch["y"].numpy()
+
+                val_loss += test_step(
+                    model_params, _pulse_parameters, _unitaries, _expectations
+                )
+
+            history[-1].val_loss = float(val_loss / len(val_dataloader))
+
+            if callback is not None:
+                callback(history[-1])
+
+    return model_params, opt_state, history
+
+
+X, Y, Z = (
+    jnp.array(specq.Operator.from_label("X")),
+    jnp.array(specq.Operator.from_label("Y")),
+    jnp.array(specq.Operator.from_label("Z")),
 )
 
-# The params are [amplitude, phase]
-signal_with_phase = lambda params, t, qubit_freq, total_time_ns: jnp.real(
-    jnp.exp(1j * (2 * jnp.pi * qubit_freq * t + params[1]))
-    * qml.pulse.pwc((0, total_time_ns))(params[0], t)
-)
 
 
-def duffling_oscillator_hamiltonian(
-    qubit_info: specq.QubitInformation,
-    signal: Callable,
-) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
-    static_hamiltonian = (
-        2
-        * jnp.pi
-        * qubit_info.frequency
-        * qml.jordan_wigner(qml.FermiC(0) * qml.FermiA(0))
-    )
-    drive_hamiltonian = (
-        2
-        * jnp.pi
-        * qubit_info.drive_strength
-        * qml.jordan_wigner(qml.FermiC(0) + qml.FermiA(0))
-    )
-
-    return static_hamiltonian + signal * drive_hamiltonian
-
-
-def rotating_duffling_oscillator_hamiltonian(
-    qubit_info: specq.QubitInformation, signal: Callable
-) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
-    a0 = 2 * jnp.pi * qubit_info.frequency
-    a1 = 2 * jnp.pi * qubit_info.drive_strength
-
-    f3 = lambda params, t: a1 * signal(params, t)  # * ((a0 * t / 2)**2)
-    f_sigma_x = lambda params, t: f3(params, t) * jnp.cos(a0 * t)
-    f_sigma_y = lambda params, t: f3(params, t) * jnp.sin(a0 * t)
-
-    return f_sigma_x * qml.PauliX(0) + f_sigma_y * qml.PauliY(0)
-
-
-def transmon_hamiltonian(
-    qubit_info: specq.QubitInformation, waveform: Callable
-) -> qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian:
-    H_0 = qml.pulse.transmon_interaction(
-        qubit_freq=[qubit_info.frequency], connections=[], coupling=[], wires=[0]
-    )
-    H_d0 = qml.pulse.transmon_drive(
-        waveform, 0, qubit_info.frequency, 0
-    )  # NOTE: f2 must be real function.
-
-    return H_0 + H_d0
-
-
-def rotating_transmon_hamiltonian(
-    qubit_info: specq.QubitInformation, signal: Callable
+def gate_loss(
+    x: jnp.ndarray,
+    model: nn.Module,
+    model_params: VariableDict,
+    simulator: SimulatorFnV2,
+    pulse_sequence: JaxBasedPulseSequence,
+    target_unitary: jnp.ndarray,
 ):
+    fidelities_dict: dict[str, jnp.ndarray] = {}
+    # x is the pulse parameters in the flattened form
+    # pulse_params = array_to_params_list(x)
+    pulse_params = pulse_sequence.array_to_list_of_params(x)
 
-    a0 = 2 * jnp.pi * qubit_info.frequency
-    a1 = 2 * jnp.pi * qubit_info.drive_strength
-
-    f3 = lambda params, t: a1 * signal(params, t)
-    f_sigma_x = lambda params, t: f3(params, t) * jnp.cos(a0 * t)
-    f_sigma_y = lambda params, t: -1 * f3(params, t) * jnp.sin(a0 * t)   # NOTE: WHY?
-
-    return f_sigma_x * qml.PauliX(0) + f_sigma_y * qml.PauliY(0)
-
-
-def whitebox(
-    params: jnp.ndarray,
-    t: jnp.ndarray,
-    H: qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian,
-    num_parameterized: int,
-):
-    # Evolve under the Hamiltonian
-    unitary = qml.evolve(H)([params] * num_parameterized, t, return_intermediate=True)
-    # Return the unitary
-    return qml.matrix(unitary)
-
-
-def get_simulator(
-    qubit_info: specq.QubitInformation,
-    t_eval: jnp.ndarray,
-    hamiltonian: Callable[
-        [specq.QubitInformation, Callable],
-        qml.pulse.parametrized_hamiltonian.ParametrizedHamiltonian,
-    ] = rotating_duffling_oscillator_hamiltonian,
-):
-    fixed_freq_signal = lambda params, t: signal(
-        params,
-        t,
-        0,
-        qubit_info.frequency,
-        t_eval[-1],
+    # Get the waveforms
+    # waveforms = pulse_sequence.get_waveform(pulse_params)
+    signal_params = SignalParameters(
+        pulse_params=pulse_params,
+        phase=0,
     )
 
-    H = hamiltonian(qubit_info, fixed_freq_signal)
-    num_parameterized = len(H.coeffs_parametrized)
+    # Get the unitaries
+    unitaries = simulator(signal_params)
 
-    simulator = lambda params: whitebox(params, t_eval, H, num_parameterized)
+    # Evaluate model to get the Wo parameters
+    Wo_params = model.apply(model_params, jnp.expand_dims(x, 0), training=False)
+    # squeeze the Wo_params
+    Wo_params = jax.tree.map(lambda x: jnp.squeeze(x, 0), Wo_params)
 
-    return simulator
+    loss = jnp.array(0.0)
+    # Get each Wo for each Pauli operator
+    for pauli_str, pauli_op in zip(["X", "Y", "Z"], [X, Y, Z]):
+        Wo = Wo_2_level(U=Wo_params[pauli_str]["U"], D=Wo_params[pauli_str]["D"])
+        # evaluate the fidleity to the Pauli operator
+        value = gate_fidelity(pauli_op, Wo)
+        fidelities_dict[pauli_str] = value
+
+        loss += (1 - value) ** 2
+
+    gate_fi = gate_fidelity(target_unitary, unitaries[-1])
+    fidelities_dict["gate"] = gate_fi
+
+    # Calculate the loss
+    loss += (1 - gate_fi) ** 2
+
+    return loss
 
 
-class SpecQDataset(Dataset):
-    def __init__(
-        self,
-        pulse_parameters: np.ndarray,
-        unitaries: np.ndarray,
-        expectation_values: np.ndarray,
+def optimize(
+        x0: jnp.ndarray, 
+        lower: list[ParametersDictType], 
+        upper: list[ParametersDictType], 
+        fun: Callable[[jnp.ndarray], jnp.ndarray],
     ):
-        self.pulse_parameters = torch.from_numpy(pulse_parameters)
-        self.unitaries = torch.from_numpy(unitaries)
-        self.expectation_values = torch.from_numpy(expectation_values)
 
-    def __len__(self):
-        return self.pulse_parameters.shape[0]
+    pg = ProjectedGradient(fun=fun, projection=projection_box)
+    opt_params, state = pg.run(jnp.array(x0), hyperparams_proj=(lower, upper))
 
-    def __getitem__(self, idx):
-        return {
-            # Pulse parameters
-            "x0": self.pulse_parameters[idx],
-            # Unitaries
-            "x1": self.unitaries[idx],
-            # Expectation values
-            "y": self.expectation_values[idx],
-        }
+    return opt_params, state
+
+
+def evalulate_model_to_pauli(model: nn.Module, model_params, pulse_params):
+
+    Wo_params = model.apply(model_params, pulse_params, training=False)
+
+    assert isinstance(Wo_params, dict)
+
+    fidelities = {}
+    for pauli_str, pauli_op in zip(["X", "Y", "Z"], [X, Y, Z]):
+
+        if isinstance(Wo_params[pauli_str], dict):
+            Wos = jax.vmap(Wo_2_level, in_axes=(0, 0))(
+                Wo_params[pauli_str]["U"], Wo_params[pauli_str]["D"]
+            )
+        else:
+            assert isinstance(Wo_params[pauli_str], jnp.ndarray)
+            Wos = Wo_params[pauli_str]
+        _fidel = jax.vmap(gate_fidelity, in_axes=(0, None))(Wos, pauli_op)
+        fidelities[pauli_str] = _fidel
+
+    return fidelities
 
 
 def gate_fidelity(U: jnp.ndarray, V: jnp.ndarray) -> jnp.ndarray:
@@ -301,289 +438,4 @@ def calculate_expvals(unitaries):
     return jnp.array(expvals)
 
 
-def plot_expvals(expvals):
-    fig, axes = plt.subplots(3, 6, figsize=(20, 10), sharex=True, sharey=True)
-    for i, ax in enumerate(axes.flatten()):
-        ax.plot(expvals[i])
-        ax.set_title(
-            f"{specq.default_expectation_values[i].initial_state}/{specq.default_expectation_values[i].observable}"
-        )
 
-    # Set the ylim to (-1.05, 1.05)
-    for ax in axes.flatten():
-        ax.set_ylim(-1.05, 1.05)
-
-    # Set title for the figure
-    fig.suptitle("Expectation values for the unitaries")
-
-    plt.tight_layout()
-    plt.show()
-
-def plot_expvals_v2(expvals):
-    fig, axes = plt.subplot_mosaic(
-        """
-        +r0
-        -l1
-        """,
-        figsize=(10, 5),
-        sharex=True,
-        sharey=True,
-    )
-
-    expvals_dict = {}
-    for idx, exp in enumerate(specq.default_expectation_values):
-
-        if exp.initial_state not in expvals_dict:
-            expvals_dict[exp.initial_state] = {}
-
-        expvals_dict[exp.initial_state][exp.observable] = expvals[idx]
-    
-    for idx, (initial_state, expvals) in enumerate(expvals_dict.items()):
-        ax = axes[initial_state]
-        for observable, expval in expvals.items():
-            ax.plot(expval, label=observable)
-        ax.set_title(f"Initial state: {initial_state}")
-        ax.set_ylim(-1.05, 1.05)
-        ax.legend()
-
-
-    # Set title for the figure
-    fig.suptitle("Expectation values for the unitaries")
-
-    plt.tight_layout()
-
-    return fig
-
-
-X, Y, Z = (
-    jnp.array(specq.Operator.from_label("X")),
-    jnp.array(specq.Operator.from_label("Y")),
-    jnp.array(specq.Operator.from_label("Z")),
-)
-
-
-def gate_loss(
-    x,
-    model: nn.Module,
-    model_params,
-    simulator,
-    pulse_sequence: JaxBasedPulseSequence,
-    target_unitary,
-):
-    fidelities_dict: dict[str, jnp.ndarray] = {}
-    # x is the pulse parameters in the flattened form
-    # pulse_params = array_to_params_list(x)
-    pulse_params = pulse_sequence.array_to_list_of_params(x)
-
-    # Get the waveforms
-    waveforms = pulse_sequence.get_waveform(pulse_params)
-
-    # Get the unitaries
-    unitaries = simulator(waveforms)
-
-    # Evaluate model to get the Wo parameters
-    Wo_params = model.apply(model_params, jnp.expand_dims(x, 0))
-    # squeeze the Wo_params
-    Wo_params = jax.tree_map(lambda x: jnp.squeeze(x, 0), Wo_params)
-
-    loss = jnp.array(0.0)
-    # Get each Wo for each Pauli operator
-    for pauli_str, pauli_op in zip(["X", "Y", "Z"], [X, Y, Z]):
-        Wo = Wo_2_level(U=Wo_params[pauli_str]["U"], D=Wo_params[pauli_str]["D"])
-        # evaluate the fidleity to the Pauli operator
-        value = gate_fidelity(pauli_op, Wo)
-        fidelities_dict[pauli_str] = value
-
-        loss += (1 - value) ** 2
-
-    gate_fi = gate_fidelity(target_unitary, unitaries[-1])
-    fidelities_dict["gate"] = gate_fi
-
-    # Calculate the loss
-    loss += (1 - gate_fi) ** 2
-
-    return loss
-
-def with_validation_train(
-    train_dataloader: DataLoader,
-    val_dataloader: DataLoader,
-    train_step,
-    test_step,
-    model_params,
-    opt_state,
-    num_epochs=1250,
-    force_tty=True,
-):
-
-    history = []
-    total_len = len(train_dataloader)
-
-    NUM_EPOCHS = num_epochs
-
-    with alive_bar(int(NUM_EPOCHS * total_len), force_tty=force_tty) as bar:
-        for epoch in range(NUM_EPOCHS):
-            total_loss = 0.0
-            for i, batch in enumerate(train_dataloader):
-
-                _pulse_parameters = batch["x0"].numpy()
-                _unitaries = batch["x1"].numpy()
-                _expectations = batch["y"].numpy()
-
-                model_params, opt_state, loss = train_step(
-                    model_params, opt_state, _pulse_parameters, _unitaries, _expectations
-                )
-
-                history.append(
-                    {
-                        "epoch": epoch,
-                        "step": i,
-                        "loss": float(loss),
-                        "global_step": epoch * total_len + i,
-                        "val_loss": None,
-                    }
-                )
-
-                total_loss += loss
-
-                bar()
-
-            # Validation
-            val_loss = 0.0
-            for i, batch in enumerate(val_dataloader):
-
-                _pulse_parameters = batch["x0"].numpy()
-                _unitaries = batch["x1"].numpy()
-                _expectations = batch["y"].numpy()
-
-                val_loss += test_step(model_params, _pulse_parameters, _unitaries, _expectations)
-
-            history[-1]["val_loss"] = float(val_loss / len(val_dataloader))
-
-
-    return model_params, opt_state, history
-
-
-def with_validation_train_v2(
-    train_dataloader: DataLoader,
-    val_dataloader: DataLoader,
-    train_step,
-    test_step,
-    model_params,
-    opt_state,
-    num_epochs=1250,
-):
-
-    history = []
-    total_len = len(train_dataloader)
-
-    NUM_EPOCHS = num_epochs
-
-    with rprogress.Progress(
-        rprogress.TimeElapsedColumn(),
-        rprogress.TextColumn("[progress.description]{task.description}"),
-        transient=False,
-    ) as main_progress:
-
-        training_loop_task_id = main_progress.add_task(
-            description="Training loop", total=int(NUM_EPOCHS * total_len)
-        )
-
-        for epoch in range(NUM_EPOCHS):
-            total_loss = 0.0
-            for i, batch in enumerate(train_dataloader):
-
-                _pulse_parameters = batch["x0"].numpy()
-                _unitaries = batch["x1"].numpy()
-                _expectations = batch["y"].numpy()
-
-                model_params, opt_state, loss = train_step(
-                    model_params, opt_state, _pulse_parameters, _unitaries, _expectations
-                )
-
-                history.append(
-                    {
-                        "epoch": epoch,
-                        "step": i,
-                        "loss": float(loss),
-                        "global_step": epoch * total_len + i,
-                        "val_loss": None,
-                    }
-                )
-
-                total_loss += loss
-
-                # update the progress bar
-                main_progress.update(training_loop_task_id, completed=i + 1)
-
-            # Validation
-            val_loss = 0.0
-            for i, batch in enumerate(val_dataloader):
-
-                _pulse_parameters = batch["x0"].numpy()
-                _unitaries = batch["x1"].numpy()
-                _expectations = batch["y"].numpy()
-
-                val_loss += test_step(model_params, _pulse_parameters, _unitaries, _expectations)
-
-            history[-1]["val_loss"] = float(val_loss / len(val_dataloader))
-
-    return model_params, opt_state, history
-
-
-def plot_history(history: list):
-
-    hist_df = pd.DataFrame(history)
-    train = hist_df[["global_step", "loss"]].values
-
-    train_x = train[:, 0]
-    train_y = train[:, 1]
-
-    validate = hist_df[["global_step", "val_loss"]].replace(0, jnp.nan).dropna().values
-
-    validate_x = validate[:, 0]
-    validate_y = validate[:, 1]
-    # The second plot has height ratio 2
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6), sharex=True)
-
-    # The first plot is the training loss and the validation loss
-    ax.plot(train_x, train_y, label="train_loss")
-    ax.plot(validate_x, validate_y, label="val_loss")
-    ax.set_yscale("log")
-
-    # plot the horizontal line [1e-3, 1e-2]
-    ax.axhline(1e-3, color="red", linestyle="--")
-    ax.axhline(1e-2, color="red", linestyle="--")
-
-    ax.legend()
-
-    fig.tight_layout()
-
-    return fig, ax
-    
-def optimize(
-    x0,
-    lower,
-    upper,
-    fun
-):
-
-    pg = ProjectedGradient(fun=fun, projection=projection_box)
-    opt_params, state = pg.run(
-        jnp.array(x0),
-        hyperparams_proj=(lower, upper)
-    )
-
-    return opt_params, state
-
-def evalulate_model_to_pauli(model, model_params, pulse_params):
-
-    Wo_params = model.apply(model_params, pulse_params)
-    fidelities = {}
-    for pauli_str, pauli_op in zip(["X", "Y", "Z"], [X, Y, Z]):
-        Wos = jax.vmap(Wo_2_level, in_axes=(0, 0))(
-            Wo_params[pauli_str]["U"], Wo_params[pauli_str]["D"]
-        )
-        _fidel = jax.vmap(gate_fidelity, in_axes=(0, None))(Wos, pauli_op)
-        fidelities[pauli_str] = _fidel
-
-    return fidelities
