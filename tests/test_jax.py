@@ -1,21 +1,22 @@
-from qiskit_ibm_runtime.fake_provider import FakeJakartaV2  # type: ignore
-from specq_dev import qiskit as specq_qiskit, shared  # type: ignore
-from specq_dev.jax import JaxBasedPulseSequence  # type: ignore
-from specq_dev.test_utils import get_jax_based_pulse_sequence  # type: ignore
 import jax
+jax.config.update("jax_enable_x64", True)
+
+from qiskit_ibm_runtime.fake_provider import FakeJakartaV2  # type: ignore
+from specq_dev import qiskit as qk, shared  # type: ignore
+from specq_dev.test_utils import get_jax_based_pulse_sequence  # type: ignore
 import jax.numpy as jnp
 
 from qiskit_ibm_runtime import SamplerV2, SamplerV1, Options  # type: ignore
 
-from specq_jax import core, data, model as specq_model, pulse  # type: ignore
+from specq_jax import core, data, model as specq_model, simulator as sqjs  # type: ignore
+import specq_jax.utils.testing as ut
+import specq_jax.utils.helper as sqjh
 
 from torch import Generator
 from torch.utils.data import DataLoader, Subset
 import optax  # type: ignore
 from dataclasses import asdict
 import logging
-import pytest
-from rich import inspect
 
 def test_pulse_reader(tmp_path):
 
@@ -39,22 +40,20 @@ def test_end_to_end(tmp_path):
     QUBIT_IDX = 0
     INSTANCE = "ibm_test"
 
-    # service, backend = specq_qiskit.get_ibm_service_and_backend(instance=INSTANCE, backend_name=BACKEND_NAME)
+    # service, backend = qk.get_ibm_service_and_backend(instance=INSTANCE, backend_name=BACKEND_NAME)
 
     backend = FakeJakartaV2()
     service = None
 
-    backend_properties = specq_qiskit.IBMQDeviceProperties.from_backend(
+    backend_properties = qk.IBMQDeviceProperties.from_backend(
         backend=backend, qubit_indices=[QUBIT_IDX]
     )
 
-    qubit_info = specq_qiskit.get_qubit_information_from_backend(
-        backend, 0, service=service
-    )
+    qubit_info = backend_properties.qubit_informations[QUBIT_IDX]
 
     logging.debug(f"Backend properties: {backend_properties}")
 
-    pulse_sequence = get_jax_based_pulse_sequence()
+    pulse_sequence = ut.get_multi_drag_pulse_sequence_v2()
     pulse_sequence.to_file(str(d))
 
     config = shared.ExperimentConfiguration(
@@ -74,7 +73,7 @@ def test_end_to_end(tmp_path):
 
     key = jax.random.PRNGKey(0)
 
-    df, circuits = specq_qiskit.prepare_experiment(
+    df, circuits = qk.prepare_experiment(
         config, pulse_sequence, key, backend_properties
     )
 
@@ -84,7 +83,7 @@ def test_end_to_end(tmp_path):
 
     assert len(df) == len(circuits)
 
-    transpiled_circuits = specq_qiskit.transpile_circuits(
+    transpiled_circuits = qk.transpile_circuits(
         circuits, backend_properties.backend_instance, inital_layout=[QUBIT_IDX]
     )
 
@@ -108,15 +107,19 @@ def test_end_to_end(tmp_path):
     Sampler = SamplerV2 if backend_properties.is_simulator else SamplerV1
     options = options_v2 if backend_properties.is_simulator else options_v1
 
-    execute_dataframe, jobs = specq_qiskit.execute_experiment(
+    execute_dataframe, jobs = qk.execute_experiment(
         df, backend_properties, options, transpiled_circuits, service, Sampler
     )
 
-    _jobs, is_all_done, is_error = specq_qiskit.check_jobs_status(
+    _jobs, is_all_done, is_error, num_done = qk.check_jobs_status(
         execute_dataframe, service=service, jobs=jobs
     )
 
-    result_df = specq_qiskit.get_result_from_remote(execute_dataframe, jobs)
+    result_df = qk.get_result_from_remote(
+        execute_dataframe, 
+        jobs,
+        qk.extract_results_v2
+    )
 
     exp_data = shared.ExperimentData(
         experiment_config=config,
@@ -129,8 +132,7 @@ def test_end_to_end(tmp_path):
 
     exp_data, pulse_parameters, unitaries, expectations, pulse_sequence, simulator = (
         data.load_data(
-            str(d),
-            core.rotating_transmon_hamiltonian,
+            d,
         )
     )
     # NOTE: flatten the pulse_parameters
@@ -143,10 +145,10 @@ def test_end_to_end(tmp_path):
     g.manual_seed(MASTER_KEY_SEED)
 
     master_key = jax.random.PRNGKey(MASTER_KEY_SEED)
-    random_split_key, model_key, gate_optim_key = jax.random.split(master_key, 3)
+    random_split_key, model_key, gate_optim_key, dropout_key = jax.random.split(master_key, 4)
 
     # Final goal of setting up is to create a dataset and a dataloader
-    dataset = core.SpecQDataset(
+    dataset = data.SpecQDataset(
         pulse_parameters=pulse_parameters[start_idx:end_idx],
         unitaries=unitaries[start_idx:end_idx],
         expectation_values=expectations[start_idx:end_idx],
@@ -195,9 +197,9 @@ def test_end_to_end(tmp_path):
         key=model_key,
         model=model,
         optimiser=optimiser,
-        loss_fn=lambda params, pulse_parameters, unitaries, expectations: core.loss(
-            params, pulse_parameters, unitaries, expectations, model
-        ),
+        # loss_fn=lambda params, pulse_parameters, unitaries, expectations, training: core.loss(
+        #     params, pulse_parameters, unitaries, expectations, training, model
+        # ),
         input_shape=(batch_size, pulse_parameters.shape[1]),
     )
 
@@ -208,6 +210,7 @@ def test_end_to_end(tmp_path):
         test_step,
         model_params,
         opt_state,
+        dropout_key,
         num_epochs=2,
     )
 
@@ -218,7 +221,7 @@ def test_end_to_end(tmp_path):
         str(MODEL_PATH),
         "0020",
         pulse_sequence,
-        core.rotating_transmon_hamiltonian,
+        sqjh.rotating_transmon_hamiltonian,
         asdict(model),
         model_params,
         history,
@@ -246,11 +249,14 @@ def test_end_to_end(tmp_path):
 
     # Plot the optmized result
     opt_pulse_params = pulse_sequence.array_to_list_of_params(opt_params)
-    pulse_sequence.draw(opt_pulse_params)
 
     # Calculate the expectation values
     waveform_opt = pulse_sequence.get_waveform(opt_pulse_params)
-    unitaries_opt = simulator(waveform_opt)
+    opt_signal_params = sqjs.SignalParameters(
+        pulse_params=opt_pulse_params,
+        phase=0
+    )
+    unitaries_opt = simulator(opt_signal_params)
 
     Wos_predicted_dict = core.evalulate_model_to_pauli(
         model, model_params, jnp.expand_dims(opt_params, 0)
@@ -265,11 +271,11 @@ def test_end_to_end(tmp_path):
 
     print("Benchmarking the gate")
 
-    qc = specq_qiskit.get_circuit(
+    qc = qk.get_circuit(
         initial_state="0",
         waveforms=waveform_opt,
         observable="Z",
-        backend=backend,
+        backend=backend_properties,
         q_idx=0,
         add_pulse=True,
         change_basis=False,

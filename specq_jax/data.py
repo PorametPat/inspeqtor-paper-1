@@ -1,8 +1,7 @@
 import specq_dev.shared as specq  # type: ignore
-import specq_dev.jax as specq_jax  # type: ignore
-from specq_dev.jax.pulse import construct_pulse_sequence_reader # type: ignore
-from specq_jax.core import get_simulator, rotating_duffling_oscillator_hamiltonian
+from specq_dev.jax.pulse import construct_pulse_sequence_reader, JaxBasedPulseSequence  # type: ignore
 import jax.numpy as jnp
+
 import jax
 from typing import Callable
 import logging
@@ -13,15 +12,24 @@ import os
 import datetime
 import json
 from typing import Union, Callable
-import pandas as pd 
-from .pulse import MultiDragPulse, DragPulse
-from specq_dev.test_utils import JaxDragPulse # type: ignore
+import pandas as pd
+from .pulse import MultiDragPulse, DragPulse, MultiDragPulseV2
+from specq_dev.test_utils import JaxDragPulse  # type: ignore
+import torch
+from torch.utils.data import Dataset
+
+from os import PathLike
+from .simulator import simulator as sqjs_simulator, signal_func_v3, SignalParameters
+from functools import partial
+from .utils.helper import rotating_transmon_hamiltonian
+
 
 def generate_path_with_datetime(sub_dir: Union[str, None] = None):
     return os.path.join(
         sub_dir if sub_dir is not None else "",
-        datetime.datetime.now().strftime("Y%YM%mD%d-H%HM%MS%S")
+        datetime.datetime.now().strftime("Y%YM%mD%d-H%HM%MS%S"),
     )
+
 
 @dataclass
 class DataConfig:
@@ -46,6 +54,7 @@ class DataConfig:
         with open(f"{path}/data_config.json", "r") as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
+
 
 @dataclass
 class ModelState:
@@ -79,9 +88,12 @@ class ModelState:
             return isinstance(x, list)
 
         # Apply the inverse of the tree.map function
-        model_params = jax.tree.map(lambda x: jnp.array(x), model_params, is_leaf=is_leaf)
+        model_params = jax.tree.map(
+            lambda x: jnp.array(x), model_params, is_leaf=is_leaf
+        )
 
         return cls(model_config, model_params)
+
 
 def save_model(
     path: str,
@@ -112,13 +124,16 @@ def save_model(
     # Save the data config
     data_config = DataConfig(
         EXPERIMENT_IDENTIFIER=experiment_identifier,
-        hamiltonian=hamiltonian if isinstance(hamiltonian, str) else hamiltonian.__name__,
+        hamiltonian=(
+            hamiltonian if isinstance(hamiltonian, str) else hamiltonian.__name__
+        ),
         pulse_sequence=pulse_sequence.to_dict(),
     )
 
     data_config.to_file(_path)
 
     return _path
+
 
 def load_model(path: str):
     model_state = ModelState.load(path + "/model_state")
@@ -131,89 +146,93 @@ def load_model(path: str):
         data_config,
     )
 
-def calculate_unitaries(
-    pulse_sequence: specq.BasePulseSequence,
-):
-
-    return
-
 
 pulse_reader = construct_pulse_sequence_reader(
-    pulses=[
-        MultiDragPulse, DragPulse, JaxDragPulse
-    ]
+    pulses=[MultiDragPulse, DragPulse, JaxDragPulse, MultiDragPulseV2]
 )
 
-def load_data(
-    path: str,
-    hamiltonian=rotating_duffling_oscillator_hamiltonian,
-):
+
+def load_data(path: PathLike):
+
     # Load the data from the experiment
     exp_data = specq.ExperimentData.from_folder(path)
+    dt = exp_data.experiment_config.device_cycle_time_ns
+    qubit_info = exp_data.experiment_config.qubits[0]
 
     logging.info(f"Loaded data from {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}")
 
-    # Setup the simulator
-    dt = exp_data.experiment_config.device_cycle_time_ns
-    qubit_info = exp_data.experiment_config.qubits[0]
-    # pulse_sequence = get_pulse_sequence()
     pulse_sequence = pulse_reader(path)
+
     t_eval = jnp.linspace(
         0, pulse_sequence.pulse_length_dt * dt, pulse_sequence.pulse_length_dt
     )
-    simulator = get_simulator(
-        qubit_info=qubit_info, t_eval=t_eval, hamiltonian=hamiltonian
+
+    hamiltonian = partial(
+        rotating_transmon_hamiltonian,
+        qubit_info=qubit_info,
+        signal=signal_func_v3(
+            pulse_sequence.get_envelope,
+            qubit_info.frequency,
+            dt,
+        ),
     )
 
-    # Get the waveforms for each pulse parameters to get the unitaries
-    _waveforms = []
+    jiited_simulator = jax.jit(
+        partial(
+            sqjs_simulator,
+            t_eval=t_eval,
+            hamiltonian=hamiltonian,
+            y0=jnp.eye(2, dtype=jnp.complex64),
+        )
+    )
+
+    signal_params: list[SignalParameters] = []
     for pulse_params in exp_data.get_parameters_dict_list():
-        _waveforms.append(pulse_sequence.get_waveform(pulse_params))
+        signal_params.append(SignalParameters(pulse_params=pulse_params, phase=0))
 
-    waveforms = jnp.array(_waveforms)
+    unitaries = []
+    for signal_param in signal_params:
+        unitaries.append(jiited_simulator(signal_param))
 
-    logging.info(
-        f"Prepared the waveforms for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
-    )
-
-    # Check if the unitaries are already calculated
-    # if os.path.exists(f"{path}/unitaries.npy"):
-    #     unitaries = np.load(f"{path}/unitaries.npy")
-    #     logging.info(
-    #         f"Loaded the unitaries for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
-    #     )
-    # else:
-
-    # jit the simulator
-    jitted_simulator = jax.jit(simulator)
-    # batch the simulator
-    batched_simulator = jax.vmap(jitted_simulator, in_axes=(0))
-    # Get the unitaries
-    unitaries = batched_simulator(waveforms)
-
-    logging.info(
-        f"Got the unitaries for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
-    )
-
-    # Get the final unitaries
-    unitaries = np.array(unitaries[:, -1, :, :])
-        # Save the unitaries
-        # np.save(f"{path}/unitaries.npy", unitaries)
-
-    # Get the expectation values from the experiment
-    expectations = exp_data.get_expectation_values()
-    # Get the pulse parameters
-    pulse_parameters = exp_data.parameters
+    np_unitaries = np.array(unitaries)[:, -1, :, :]
 
     logging.info(
         f"Finished preparing the data for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
     )
 
+    pulse_parameters = exp_data.parameters
+    expectations = exp_data.get_expectation_values()
+
     return (
         exp_data,
         pulse_parameters,
-        unitaries,
+        np_unitaries,
         expectations,
         pulse_sequence,
-        simulator,
+        jiited_simulator,
     )
+
+
+class SpecQDataset(Dataset):
+    def __init__(
+        self,
+        pulse_parameters: np.ndarray,
+        unitaries: np.ndarray,
+        expectation_values: np.ndarray,
+    ):
+        self.pulse_parameters = torch.from_numpy(pulse_parameters)
+        self.unitaries = torch.from_numpy(unitaries)
+        self.expectation_values = torch.from_numpy(expectation_values)
+
+    def __len__(self):
+        return self.pulse_parameters.shape[0]
+
+    def __getitem__(self, idx):
+        return {
+            # Pulse parameters
+            "x0": self.pulse_parameters[idx],
+            # Unitaries
+            "x1": self.unitaries[idx],
+            # Expectation values
+            "y": self.expectation_values[idx],
+        }
