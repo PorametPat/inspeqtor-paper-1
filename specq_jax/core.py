@@ -18,14 +18,15 @@ from flax.typing import VariableDict
 from .simulator import SimulatorFnV2, SignalParameters
 from specq_dev.shared import ParametersDictType
 
+
 class LossFn(Protocol):
 
     def __call__(
         self,
         params: VariableDict,
         pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
-        unitaries: Complex[Array, "batch dim dim"],
-        expectation_values: Float[Array, "batch num_expectations"],
+        unitaries: Complex[Array, "batch dim dim"], # noqa: F722
+        expectation_values: Float[Array, "batch num_expectations"], # noqa: F722
         training: bool,
     ) -> Float[Array, "1"]: ...
 
@@ -36,7 +37,7 @@ class TrainStepFn(Protocol):
         self,
         params: VariableDict,
         opt_state: optax.OptState,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"],
+        pulse_parameters: Float[Array, "batch num_pulses num_features"], # noqa: F722
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Float[Array, "batch num_expectations"],  # noqa: F722
         dropout_key: jnp.ndarray,
@@ -48,11 +49,10 @@ class TestStepFn(Protocol):
     def __call__(
         self,
         params: VariableDict,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"],
+        pulse_parameters: Float[Array, "batch num_pulses num_features"], # noqa: F722
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Float[Array, "batch num_expectations"],  # noqa: F722
     ) -> float: ...
-
 
 
 @dataclass
@@ -66,7 +66,6 @@ class History:
 
 class CallbackFn(Protocol):
     def __call__(self, history: History) -> None: ...
-
 
 
 def calculate_exp(
@@ -167,7 +166,6 @@ def loss_fn(
         expectation_values=expectation_values,
         evaluate_expectation_values=evaluate_expectation_values,
     )
-
 
 
 def create_train_step(
@@ -329,7 +327,6 @@ X, Y, Z = (
 )
 
 
-
 def gate_loss(
     x: jnp.ndarray,
     model: nn.Module,
@@ -378,11 +375,11 @@ def gate_loss(
 
 
 def optimize(
-        x0: jnp.ndarray, 
-        lower: list[ParametersDictType], 
-        upper: list[ParametersDictType], 
-        fun: Callable[[jnp.ndarray], jnp.ndarray],
-    ):
+    x0: jnp.ndarray,
+    lower: list[ParametersDictType],
+    upper: list[ParametersDictType],
+    fun: Callable[[jnp.ndarray], jnp.ndarray],
+):
 
     pg = ProjectedGradient(fun=fun, projection=projection_box)
     opt_params, state = pg.run(jnp.array(x0), hyperparams_proj=(lower, upper))
@@ -436,6 +433,3 @@ def calculate_expvals(unitaries):
         expvals.append(expvals_time)
 
     return jnp.array(expvals)
-
-
-
