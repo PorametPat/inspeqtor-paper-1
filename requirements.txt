@@ -15,6 +15,7 @@ qiskit
 jaxtyping
 matplotlib
 orbax-checkpoint
+diffrax
 alive-progress
 qiskit-aer
 qiskit_ibm_runtime
