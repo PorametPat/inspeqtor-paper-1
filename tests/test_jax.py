@@ -138,38 +138,38 @@ def test_end_to_end(tmp_path):
     # NOTE: flatten the pulse_parameters
     pulse_parameters = pulse_parameters.reshape(SAMPLE_SIZE, -1)
 
-    start_idx, end_idx = 0, SAMPLE_SIZE
-    batch_size = 2
+    # start_idx, end_idx = 0, SAMPLE_SIZE
+    # batch_size = 2
     MASTER_KEY_SEED = 0
-    g = Generator()
-    g.manual_seed(MASTER_KEY_SEED)
+    # g = Generator()
+    # g.manual_seed(MASTER_KEY_SEED)
 
     master_key = jax.random.PRNGKey(MASTER_KEY_SEED)
     random_split_key, model_key, gate_optim_key, dropout_key = jax.random.split(master_key, 4)
 
-    # Final goal of setting up is to create a dataset and a dataloader
-    dataset = data.SpecQDataset(
-        pulse_parameters=pulse_parameters[start_idx:end_idx],
-        unitaries=unitaries[start_idx:end_idx],
-        expectation_values=expectations[start_idx:end_idx],
-    )
+    # # Final goal of setting up is to create a dataset and a dataloader
+    # dataset = data.SpecQDataset(
+    #     pulse_parameters=pulse_parameters[start_idx:end_idx],
+    #     unitaries=unitaries[start_idx:end_idx],
+    #     expectation_values=expectations[start_idx:end_idx],
+    # )
 
-    # Randomly split dataset into training and validation
-    val_indices = jax.random.choice(
-        random_split_key, len(dataset), (int(0.2 * len(dataset)),), replace=False
-    ).tolist()
+    # # Randomly split dataset into training and validation
+    # val_indices = jax.random.choice(
+    #     random_split_key, len(dataset), (int(0.2 * len(dataset)),), replace=False
+    # ).tolist()
 
-    training_indices = list(set([i for i in range(len(dataset))]) - set(val_indices))
+    # training_indices = list(set([i for i in range(len(dataset))]) - set(val_indices))
 
-    train_dataset = Subset(dataset, training_indices)
-    val_dataset = Subset(dataset, val_indices)
+    # train_dataset = Subset(dataset, training_indices)
+    # val_dataset = Subset(dataset, val_indices)
 
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, generator=g
-    )
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=True, generator=g
-    )
+    # train_dataloader = DataLoader(
+    #     train_dataset, batch_size=batch_size, shuffle=True, generator=g
+    # )
+    # val_dataloader = DataLoader(
+    #     val_dataset, batch_size=batch_size, shuffle=True, generator=g
+    # )
 
     model = specq_model.BasicBlackBox(feature_size=5)
 
@@ -193,33 +193,59 @@ def test_end_to_end(tmp_path):
 
     optimiser = optax.adam(lr_scheduler)
 
-    train_step, test_step, model_params, opt_state, transform_state = core.create_train_step(
+    # train_step, test_step, model_params, opt_state, transform_state = core.create_train_step(
+    #     key=model_key,
+    #     model=model,
+    #     optimiser=optimiser,
+    #     # loss_fn=lambda params, pulse_parameters, unitaries, expectations, training: core.loss(
+    #     #     params, pulse_parameters, unitaries, expectations, training, model
+    #     # ),
+    #     input_shape=(batch_size, pulse_parameters.shape[1]),
+    # )
+
+    # model_params, opt_state, history = core.with_validation_train(
+    #     train_dataloader,
+    #     val_dataloader,
+    #     train_step,
+    #     test_step,
+    #     model_params,
+    #     opt_state,
+    #     dropout_key,
+    #     num_epochs=2,
+    #     transform=None,
+    #     transform_state=transform_state,
+    # )
+
+    transform = core.default_adaptive_lr_transform(
+        PATIENCE=10,
+        COOLDOWN=0,
+        FACTOR=0.1,
+        RTOL=1e-4,
+        ACCUMULATION_SIZE=2,
+    )
+
+    train_dataloader, val_dataloader = data.prepare_dataset(
+        pulse_parameters=pulse_parameters,
+        unitaries=unitaries,
+        expectation_values=expectations,
+        key=random_split_key,
+    )
+
+    model_params, opt_state, history = core.train_model(
         key=model_key,
         model=model,
         optimiser=optimiser,
-        # loss_fn=lambda params, pulse_parameters, unitaries, expectations, training: core.loss(
-        #     params, pulse_parameters, unitaries, expectations, training, model
-        # ),
-        input_shape=(batch_size, pulse_parameters.shape[1]),
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        num_epoch=2,
+        transform=transform,
     )
 
-    model_params, opt_state, history = core.with_validation_train(
-        train_dataloader,
-        val_dataloader,
-        train_step,
-        test_step,
-        model_params,
-        opt_state,
-        dropout_key,
-        num_epochs=2,
-        transform=None,
-        transform_state=transform_state,
-    )
 
     MODEL_PATH = tmp_path / "ckpts/"
     MODEL_PATH.mkdir()
 
-    _path = data.save_model(
+    model_path = data.save_model(
         str(MODEL_PATH),
         "0020",
         pulse_sequence,
