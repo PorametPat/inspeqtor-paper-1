@@ -23,6 +23,8 @@ from .simulator import simulator as sqjs_simulator, signal_func_v3, SignalParame
 from functools import partial
 from .utils.helper import rotating_transmon_hamiltonian
 
+from torch import Generator
+from torch.utils.data import DataLoader, Subset
 
 def generate_path_with_datetime(sub_dir: Union[str, None] = None):
     return os.path.join(
@@ -236,3 +238,88 @@ class SpecQDataset(Dataset):
             # Expectation values
             "y": self.expectation_values[idx],
         }
+
+
+
+def prepare_dataset(
+    pulse_parameters: jnp.ndarray,
+    unitaries: jnp.ndarray,
+    expectation_values: jnp.ndarray,
+    key: jnp.ndarray,
+    batch_size_ratio: float = 0.1,
+    train_val_ratio: float = 0.2,
+):
+
+    # Sanity check on the inputs
+    # pulse_parameters.shape should be len(shape) == 2
+    assert (
+        len(pulse_parameters.shape) == 2
+    ), "The shape of pulse parameters should be (batch, pulse_params)"
+    pulse_parameters_size = pulse_parameters.shape[0]
+
+    # unitaries.shape should be (batch, 2, 2)
+    if len(unitaries.shape) == 4:
+        _unitaries = unitaries[:, -1, :, :]
+        logging.info(
+            "Assumed that unitaries provided has time step dims at axis = 1, select only the last time step"
+        )
+    elif len(unitaries.shape) == 3:
+        _unitaries = jnp.array(unitaries)
+    else:
+        raise ValueError(
+            f"The provided unitaries is invalid with shape {str(unitaries.shape)}"
+        )
+    unitaries_size = unitaries.shape[0]
+
+    assert (
+        len(expectation_values.shape) == 2
+    ), "The shape of pulse parameters should be (batch, expectation_value_order)"
+    expectation_values_size = expectation_values.shape[0]
+    # Check if we needed to transpose the unitaries or not.
+    if not expectation_values_size == pulse_parameters_size:
+        # Try to transpose
+        _expectation_value = np.array(expectation_values.T)
+        expectation_values_size = _expectation_value.shape[0]
+    else:
+        _expectation_value = np.array(expectation_values)
+
+    # Check if all of the sizes are the same
+    assert (
+        expectation_values_size == unitaries_size
+    ), "Batch size of the pulse_parameters, expectation_values, unitaries are not the same"
+
+    g = Generator()
+    g.manual_seed(0)
+
+    dataset = SpecQDataset(
+        pulse_parameters=np.array(pulse_parameters),
+        unitaries=np.array(_unitaries),  # only the final unitary
+        expectation_values=np.array(_expectation_value),
+    )
+
+    assert (train_val_ratio * len(dataset)) % 1 == 0, "The train_val_ratio is invalid, "
+
+    assert train_val_ratio > batch_size_ratio, "batch_size_ratio is larger than train_val_ratio"
+
+    assert int(train_val_ratio % batch_size_ratio) == 0, "train_val_ratio must be multiplier of batch_size_ratio"
+
+    # Randomly split dataset into training and validation
+    val_indices = jax.random.choice(
+        key, len(dataset), (int(train_val_ratio * len(dataset)),), replace=False
+    ).tolist()
+
+    training_indices = list(set([i for i in range(len(dataset))]) - set(val_indices))
+
+    train_dataset = Subset(dataset, training_indices)
+    val_dataset = Subset(dataset, val_indices)
+
+    _batch_size = int(pulse_parameters.shape[0] * batch_size_ratio)
+
+    train_dataloader = DataLoader(
+        train_dataset, batch_size=_batch_size, shuffle=True, generator=g
+    )
+    val_dataloader = DataLoader(
+        val_dataset, batch_size=_batch_size, shuffle=True, generator=g
+    )
+
+    return train_dataloader, val_dataloader

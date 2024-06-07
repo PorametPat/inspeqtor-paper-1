@@ -200,7 +200,7 @@ def evaluate_accuracy(
     tobe_trained_model: nn.Module,
 ):
 
-    loss = core.loss_fn(
+    loss = loss_fn(
         params=model_params,
         pulse_parameters=pulse_parameters[indices],
         unitaries=unitaries[indices],
@@ -531,3 +531,40 @@ def calculate_expvals(unitaries):
         expvals.append(expvals_time)
 
     return jnp.array(expvals)
+
+
+def train_model(
+    key: jnp.ndarray,
+    model: nn.Module,
+    optimiser: optax.GradientTransformation,
+    train_dataloader: DataLoader,
+    val_dataloader: DataLoader,
+    num_epoch: int,
+    progress_bar: bool = True,
+    transform: Union[optax.GradientTransformationExtraArgs, None] = None,
+):
+    
+    model_key, dropout_key = jax.random.split(key)
+
+    train_step, test_step, model_params, opt_state, transform_state = create_train_step(
+        key=model_key,
+        model=model,
+        optimiser=optimiser,
+        transform=transform,
+        input_shape=next(iter(train_dataloader))['x0'].shape,
+    )
+
+    model_params, opt_state, history = with_validation_train(
+        train_dataloader,
+        val_dataloader,
+        train_step,
+        test_step,
+        model_params,
+        opt_state,
+        dropout_key,
+        num_epochs=num_epoch,
+        force_tty=progress_bar,
+        transform=transform,
+        transform_state=transform_state
+    )
+    return model_params, opt_state, history
