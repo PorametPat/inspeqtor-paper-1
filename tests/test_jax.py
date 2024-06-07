@@ -193,7 +193,7 @@ def test_end_to_end(tmp_path):
 
     optimiser = optax.adam(lr_scheduler)
 
-    train_step, test_step, model_params, opt_state = core.create_train_step(
+    train_step, test_step, model_params, opt_state, transform_state = core.create_train_step(
         key=model_key,
         model=model,
         optimiser=optimiser,
@@ -212,6 +212,8 @@ def test_end_to_end(tmp_path):
         opt_state,
         dropout_key,
         num_epochs=2,
+        transform=None,
+        transform_state=transform_state,
     )
 
     MODEL_PATH = tmp_path / "ckpts/"
