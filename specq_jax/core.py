@@ -41,6 +41,7 @@ class TrainStepFn(Protocol):
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Float[Array, "batch num_expectations"],  # noqa: F722
         dropout_key: jnp.ndarray,
+        transform_state: Union[None, optax.OptState],
     ) -> tuple[Any, Any, float]: ...
 
 
@@ -62,6 +63,7 @@ class History:
     loss: float
     global_step: int
     val_loss: float | None = None
+    lr: float | None = None
 
 
 class CallbackFn(Protocol):
@@ -84,6 +86,28 @@ def mse(y_true, y_pred):
 batched_calculate_expectation_value = jax.vmap(calculate_exp, in_axes=(0, 0, None))
 batch_mse = jax.vmap(mse, in_axes=(0, 0))
 
+def Wo_2_level(
+    U: jnp.ndarray,
+    D: jnp.ndarray,
+) -> jnp.ndarray:
+
+    alpha = U[0]
+    theta = U[1]
+    beta = U[2]
+
+    lambda_1 = D[0]
+    lambda_2 = D[1]
+
+    q_00 = jnp.exp(1j * alpha) * jnp.cos(theta)
+    q_01 = jnp.exp(1j * beta) * jnp.sin(theta)
+    q_10 = jnp.exp(-1j * beta) * jnp.sin(theta)
+    q_11 = -jnp.exp(-1j * alpha) * jnp.cos(theta)
+
+    Q = jnp.array([[q_00, q_01], [q_10, q_11]])
+
+    _D = jnp.array([[lambda_1, 0], [0, lambda_2]])
+
+    return Q @ _D @ Q.T.conj()
 
 def get_predict_expectation_value(
     Wos_params: dict[str, dict[str, jnp.ndarray]],
@@ -167,12 +191,31 @@ def loss_fn(
         evaluate_expectation_values=evaluate_expectation_values,
     )
 
+def evaluate_accuracy(
+    model_params: VariableDict,
+    pulse_parameters: Array,
+    unitaries: Array,
+    expectations: Array,
+    indices: Array,
+    tobe_trained_model: nn.Module,
+):
+
+    loss = core.loss_fn(
+        params=model_params,
+        pulse_parameters=pulse_parameters[indices],
+        unitaries=unitaries[indices],
+        expectation_values=expectations[indices],
+        training=False,
+        model=tobe_trained_model,
+    )
+    return loss
 
 def create_train_step(
     key: jnp.ndarray,
     model: nn.Module,
-    optimiser: optax.GradientTransformation,
+    optimiser: optax.GradientTransformationExtraArgs,
     input_shape: tuple[int, int],
+    transform: Union[None, optax.GradientTransformationExtraArgs] = None,
 ):
     params = model.init(
         key,
@@ -180,6 +223,11 @@ def create_train_step(
         training=False,
     )  # dummy key just as example input
     opt_state = optimiser.init(params)
+
+    if transform is not None:
+        transform_state = transform.init(opt_state)
+    else:
+        transform_state = None
 
     @jax.jit
     def train_step(
@@ -189,6 +237,7 @@ def create_train_step(
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Complex[Array, "batch num_expectations"],  # noqa: F722
         dropout_key: jnp.ndarray,
+        transform_state: None,
     ):
         loss, grads = jax.value_and_grad(loss_fn_with_dropout)(
             params,
@@ -201,6 +250,35 @@ def create_train_step(
         )
 
         updates, opt_state = optimiser.update(grads, opt_state, params)
+        params = optax.apply_updates(params, updates)
+
+        return params, opt_state, loss
+
+    @jax.jit
+    def train_step_wtih_transform(
+        params: VariableDict,
+        opt_state: optax.OptState,
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
+        unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
+        expectations: Complex[Array, "batch num_expectations"],  # noqa: F722
+        dropout_key: jnp.ndarray,
+        transform_state: optax.OptState,
+    ):
+        loss, grads = jax.value_and_grad(loss_fn_with_dropout)(
+            params,
+            pulse_parameters,
+            unitaries,
+            expectations,
+            True,
+            dropout_key,
+            model=model,
+        )
+
+        updates, opt_state = optimiser.update(grads, opt_state, params)
+
+        # Apply the transform
+        updates = optax.tree_utils.tree_scalar_mul(transform_state.scale, updates)
+
         params = optax.apply_updates(params, updates)
 
         return params, opt_state, loss
@@ -222,31 +300,13 @@ def create_train_step(
         )
         return loss
 
-    return train_step, test_step, params, opt_state
-
-
-def Wo_2_level(
-    U: jnp.ndarray,
-    D: jnp.ndarray,
-) -> jnp.ndarray:
-
-    alpha = U[0]
-    theta = U[1]
-    beta = U[2]
-
-    lambda_1 = D[0]
-    lambda_2 = D[1]
-
-    q_00 = jnp.exp(1j * alpha) * jnp.cos(theta)
-    q_01 = jnp.exp(1j * beta) * jnp.sin(theta)
-    q_10 = jnp.exp(-1j * beta) * jnp.sin(theta)
-    q_11 = -jnp.exp(-1j * alpha) * jnp.cos(theta)
-
-    Q = jnp.array([[q_00, q_01], [q_10, q_11]])
-
-    _D = jnp.array([[lambda_1, 0], [0, lambda_2]])
-
-    return Q @ _D @ Q.T.conj()
+    return (
+        train_step_wtih_transform if transform is not None else train_step,
+        test_step,
+        params,
+        opt_state,
+        transform_state,
+    )
 
 
 def with_validation_train(
@@ -259,6 +319,8 @@ def with_validation_train(
     dropout_key: jnp.ndarray,
     num_epochs=1250,
     force_tty=True,
+    transform: Union[None, optax.GradientTransformationExtraArgs] = None,
+    transform_state: Union[None, optax.OptState] = None,
     callback: Union[CallbackFn, None] = None,
 ):
 
@@ -266,6 +328,8 @@ def with_validation_train(
     total_len = len(train_dataloader)
 
     NUM_EPOCHS = num_epochs
+
+    transform_update = jax.jit(transform.update) if transform is not None else None
 
     with alive_bar(int(NUM_EPOCHS * total_len), force_tty=force_tty) as bar:
         for epoch in range(NUM_EPOCHS):
@@ -285,6 +349,7 @@ def with_validation_train(
                     _unitaries,
                     _expectations,
                     key,
+                    transform_state,
                 )
 
                 history.append(
@@ -314,18 +379,51 @@ def with_validation_train(
 
             history[-1].val_loss = float(val_loss / len(val_dataloader))
 
+            if transform is not None and transform_update is not None:
+                # Adjust the learning rate
+                _, transform_state = transform_update(
+                    updates=model_params,
+                    state=transform_state,
+                    value=history[-1].val_loss,
+                )
+
+                history[-1].lr = float(transform_state.scale)
+
             if callback is not None:
                 callback(history[-1])
 
     return model_params, opt_state, history
 
+def default_adaptive_lr_transform(
+    PATIENCE: int,
+    COOLDOWN: int,
+    FACTOR: float,
+    RTOL: float,
+    ACCUMULATION_SIZE: int,
+):
+    """The default adaptive learning rate transform.
+
+    Args:
+        PATIENCE (int): Number of epochs with no improvement after which learning rate will be reduced.
+        COOLDOWN (int): Number of epochs to wait before resuming normal operation after the learning rate reduction.
+        FACTOR (float): Factor by which to reduce the learning rate.
+        RTOL (float): Relative tolerance for measuring the new optimum.
+        ACCUMULATION_SIZE (int): Number of iterations to accumulate an average value.
+    """
+    transform = optax.contrib.reduce_on_plateau(
+        patience=PATIENCE,
+        cooldown=COOLDOWN,
+        factor=FACTOR,
+        rtol=RTOL,
+        accumulation_size=ACCUMULATION_SIZE
+    )
+    return transform
 
 X, Y, Z = (
     jnp.array(specq.Operator.from_label("X")),
     jnp.array(specq.Operator.from_label("Y")),
     jnp.array(specq.Operator.from_label("Z")),
 )
-
 
 def gate_loss(
     x: jnp.ndarray,
