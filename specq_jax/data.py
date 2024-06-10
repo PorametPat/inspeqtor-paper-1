@@ -25,6 +25,8 @@ from .utils.helper import rotating_transmon_hamiltonian
 
 from torch import Generator
 from torch.utils.data import DataLoader, Subset
+from .core import HistoryEntry
+from flax.typing import VariableDict
 
 def generate_path_with_datetime(sub_dir: Union[str, None] = None):
     return os.path.join(
@@ -61,7 +63,7 @@ class DataConfig:
 @dataclass
 class ModelState:
     model_config: dict
-    model_params: dict
+    model_params: VariableDict
 
     def save(self, path: str):
         # turn the dataclass into a dictionary
@@ -103,8 +105,8 @@ def save_model(
     pulse_sequence: specq.BasePulseSequence,
     hamiltonian: Union[str, Callable],
     model_config: dict,
-    model_params: dict,
-    history: list,
+    model_params: VariableDict,
+    history: list[HistoryEntry],
     with_auto_datetime: bool = True,
 ):
 
@@ -137,14 +139,17 @@ def save_model(
     return _path
 
 
-def load_model(path: str):
+def load_model(path: str, skip_history: bool = False):
     model_state = ModelState.load(path + "/model_state")
-    hist_df = pd.read_csv(path + "/history.csv")
+    if skip_history:
+        hist_df = None
+    else:
+        hist_df = pd.read_csv(path + "/history.csv").to_dict(orient="records")
     data_config = DataConfig.from_file(path)
 
     return (
         model_state,
-        hist_df.to_dict(orient="records"),
+        hist_df,
         data_config,
     )
 

@@ -25,8 +25,8 @@ class LossFn(Protocol):
         self,
         params: VariableDict,
         pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
-        unitaries: Complex[Array, "batch dim dim"], # noqa: F722
-        expectation_values: Float[Array, "batch num_expectations"], # noqa: F722
+        unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
+        expectation_values: Float[Array, "batch num_expectations"],  # noqa: F722
         training: bool,
     ) -> Float[Array, "1"]: ...
 
@@ -37,7 +37,7 @@ class TrainStepFn(Protocol):
         self,
         params: VariableDict,
         opt_state: optax.OptState,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"], # noqa: F722
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Float[Array, "batch num_expectations"],  # noqa: F722
         dropout_key: jnp.ndarray,
@@ -50,14 +50,14 @@ class TestStepFn(Protocol):
     def __call__(
         self,
         params: VariableDict,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"], # noqa: F722
+        pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Float[Array, "batch num_expectations"],  # noqa: F722
     ) -> float: ...
 
 
 @dataclass
-class History:
+class HistoryEntry:
     epoch: int
     step: int
     loss: float
@@ -67,7 +67,12 @@ class History:
 
 
 class CallbackFn(Protocol):
-    def __call__(self, history: History) -> None: ...
+    def __call__(
+        self,
+        params: VariableDict,
+        opt_state: optax.OptState,
+        history: list[HistoryEntry],
+    ) -> None: ...
 
 
 def calculate_exp(
@@ -85,6 +90,7 @@ def mse(y_true, y_pred):
 
 batched_calculate_expectation_value = jax.vmap(calculate_exp, in_axes=(0, 0, None))
 batch_mse = jax.vmap(mse, in_axes=(0, 0))
+
 
 def Wo_2_level(
     U: jnp.ndarray,
@@ -108,6 +114,7 @@ def Wo_2_level(
     _D = jnp.array([[lambda_1, 0], [0, lambda_2]])
 
     return Q @ _D @ Q.T.conj()
+
 
 def get_predict_expectation_value(
     Wos_params: dict[str, dict[str, jnp.ndarray]],
@@ -191,6 +198,7 @@ def loss_fn(
         evaluate_expectation_values=evaluate_expectation_values,
     )
 
+
 def evaluate_accuracy(
     model_params: VariableDict,
     pulse_parameters: Array,
@@ -210,12 +218,13 @@ def evaluate_accuracy(
     )
     return loss
 
+
 def create_train_step(
     key: jnp.ndarray,
     model: nn.Module,
     optimiser: optax.GradientTransformationExtraArgs,
     input_shape: tuple[int, int],
-    transform: Union[None, optax.GradientTransformationExtraArgs] = None,
+    lr_transformer: Union[None, optax.GradientTransformationExtraArgs] = None,
 ):
     params = model.init(
         key,
@@ -224,10 +233,10 @@ def create_train_step(
     )  # dummy key just as example input
     opt_state = optimiser.init(params)
 
-    if transform is not None:
-        transform_state = transform.init(opt_state)
+    if lr_transformer is not None:
+        lr_transformer_state = lr_transformer.init(opt_state)
     else:
-        transform_state = None
+        lr_transformer_state = None
 
     @jax.jit
     def train_step(
@@ -237,7 +246,7 @@ def create_train_step(
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Complex[Array, "batch num_expectations"],  # noqa: F722
         dropout_key: jnp.ndarray,
-        transform_state: None,
+        lr_transformer_state: None,
     ):
         loss, grads = jax.value_and_grad(loss_fn_with_dropout)(
             params,
@@ -255,14 +264,14 @@ def create_train_step(
         return params, opt_state, loss
 
     @jax.jit
-    def train_step_wtih_transform(
+    def train_step_wtih_lr_transformer(
         params: VariableDict,
         opt_state: optax.OptState,
         pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
         unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
         expectations: Complex[Array, "batch num_expectations"],  # noqa: F722
         dropout_key: jnp.ndarray,
-        transform_state: optax.OptState,
+        lr_transformer_state: optax.OptState,
     ):
         loss, grads = jax.value_and_grad(loss_fn_with_dropout)(
             params,
@@ -276,8 +285,8 @@ def create_train_step(
 
         updates, opt_state = optimiser.update(grads, opt_state, params)
 
-        # Apply the transform
-        updates = optax.tree_utils.tree_scalar_mul(transform_state.scale, updates)
+        # Apply the lr_transformer
+        updates = optax.tree_utils.tree_scalar_mul(lr_transformer_state.scale, updates)
 
         params = optax.apply_updates(params, updates)
 
@@ -301,11 +310,11 @@ def create_train_step(
         return loss
 
     return (
-        train_step_wtih_transform if transform is not None else train_step,
+        train_step_wtih_lr_transformer if lr_transformer is not None else train_step,
         test_step,
         params,
         opt_state,
-        transform_state,
+        lr_transformer_state,
     )
 
 
@@ -319,8 +328,8 @@ def with_validation_train(
     dropout_key: jnp.ndarray,
     num_epochs=1250,
     force_tty=True,
-    transform: Union[None, optax.GradientTransformationExtraArgs] = None,
-    transform_state: Union[None, optax.OptState] = None,
+    lr_transformer: Union[None, optax.GradientTransformationExtraArgs] = None,
+    lr_transformer_state: Union[None, optax.OptState] = None,
     callback: Union[CallbackFn, None] = None,
 ):
 
@@ -329,7 +338,9 @@ def with_validation_train(
 
     NUM_EPOCHS = num_epochs
 
-    transform_update = jax.jit(transform.update) if transform is not None else None
+    lr_transformer_update = (
+        jax.jit(lr_transformer.update) if lr_transformer is not None else None
+    )
 
     with alive_bar(int(NUM_EPOCHS * total_len), force_tty=force_tty) as bar:
         for epoch in range(NUM_EPOCHS):
@@ -349,11 +360,11 @@ def with_validation_train(
                     _unitaries,
                     _expectations,
                     key,
-                    transform_state,
+                    lr_transformer_state,
                 )
 
                 history.append(
-                    History(
+                    HistoryEntry(
                         epoch=epoch,
                         step=i,
                         loss=float(loss),
@@ -379,20 +390,21 @@ def with_validation_train(
 
             history[-1].val_loss = float(val_loss / len(val_dataloader))
 
-            if transform is not None and transform_update is not None:
+            if lr_transformer is not None and lr_transformer_update is not None:
                 # Adjust the learning rate
-                _, transform_state = transform_update(
+                _, transform_state = lr_transformer_update(
                     updates=model_params,
-                    state=transform_state,
+                    state=lr_transformer_state,
                     value=history[-1].val_loss,
                 )
 
                 history[-1].lr = float(transform_state.scale)
 
             if callback is not None:
-                callback(history[-1])
+                callback(model_params, opt_state, history)
 
     return model_params, opt_state, history
+
 
 def default_adaptive_lr_transform(
     PATIENCE: int,
@@ -415,15 +427,42 @@ def default_adaptive_lr_transform(
         cooldown=COOLDOWN,
         factor=FACTOR,
         rtol=RTOL,
-        accumulation_size=ACCUMULATION_SIZE
+        accumulation_size=ACCUMULATION_SIZE,
     )
     return transform
+
+
+def linear_schedule_with_warmup(
+    steps: int = 10000,
+    warmup_steps: int = 1000,
+    warmup_start_lr: float = 1e-6,
+    start_lr: float = 1e-2,
+    end_lr: float = 1e-6,
+):
+    lr_scheduler = optax.join_schedules(
+        [
+            optax.linear_schedule(
+                warmup_start_lr,
+                start_lr,
+                warmup_steps,
+            ),
+            optax.linear_schedule(
+                start_lr,
+                end_lr,
+                steps - warmup_steps,
+            ),
+        ],
+        [warmup_steps],
+    )
+    return lr_scheduler
+
 
 X, Y, Z = (
     jnp.array(specq.Operator.from_label("X")),
     jnp.array(specq.Operator.from_label("Y")),
     jnp.array(specq.Operator.from_label("Z")),
 )
+
 
 def gate_loss(
     x: jnp.ndarray,
@@ -541,17 +580,20 @@ def train_model(
     val_dataloader: DataLoader,
     num_epoch: int,
     progress_bar: bool = True,
-    transform: Union[optax.GradientTransformationExtraArgs, None] = None,
+    lr_transformer: Union[optax.GradientTransformationExtraArgs, None] = None,
+    callback: Union[CallbackFn, None] = None,
 ):
-    
+
     model_key, dropout_key = jax.random.split(key)
 
-    train_step, test_step, model_params, opt_state, transform_state = create_train_step(
-        key=model_key,
-        model=model,
-        optimiser=optimiser,
-        transform=transform,
-        input_shape=next(iter(train_dataloader))['x0'].shape,
+    train_step, test_step, model_params, opt_state, lr_transformer_state = (
+        create_train_step(
+            key=model_key,
+            model=model,
+            optimiser=optimiser,
+            lr_transformer=lr_transformer,
+            input_shape=next(iter(train_dataloader))["x0"].shape,
+        )
     )
 
     model_params, opt_state, history = with_validation_train(
@@ -564,7 +606,196 @@ def train_model(
         dropout_key,
         num_epochs=num_epoch,
         force_tty=progress_bar,
-        transform=transform,
-        transform_state=transform_state
+        lr_transformer=lr_transformer,
+        lr_transformer_state=lr_transformer_state,
+        callback=callback,
     )
     return model_params, opt_state, history
+
+
+from .data import prepare_dataset, save_model, load_model
+from enum import Enum
+from .model import BasicBlackBox, MLPBlackBox
+from ray.tune.search.hyperopt import HyperOptSearch
+from ray.tune.search.optuna import OptunaSearch
+from ray.tune.search import Searcher
+import tempfile
+from ray import tune, train
+from .utils.helper import rotating_transmon_hamiltonian
+
+
+def default_trainable(
+    pulse_sequence: JaxBasedPulseSequence,
+    with_dropout: bool = False,
+):
+    def trainable(
+        config: dict,
+        pulse_parameters: jnp.ndarray,
+        unitaries: jnp.ndarray,
+        expectations: jnp.ndarray,
+        model_key: jnp.ndarray,
+        train_key: jnp.ndarray,
+    ):
+
+        FEATURE_SIZE = config["feature_size"]
+        HIDDEN_LAYER_1_1 = config["hidden_layer_1_1"]
+        HIDDEN_LAYER_1_2 = config["hidden_layer_1_2"]
+        HIDDEN_LAYER_2_1 = config["hidden_layer_2_1"]
+        HIDDEN_LAYER_2_2 = config["hidden_layer_2_2"]
+
+        model_config = {
+            "feature_size": FEATURE_SIZE,
+            "hidden_sizes_1": [HIDDEN_LAYER_1_1, HIDDEN_LAYER_1_2],
+            "hidden_sizes_2": [HIDDEN_LAYER_2_1, HIDDEN_LAYER_2_2],
+        }
+
+        train_dataloader, val_dataloader = prepare_dataset(
+            pulse_parameters=pulse_parameters,
+            unitaries=unitaries,
+            expectation_values=expectations,
+            key=model_key,
+        )
+
+        lr_scheduler = optax.warmup_cosine_decay_schedule(
+            init_value=1e-6,
+            peak_value=1e-2,
+            warmup_steps=1000,
+            decay_steps=10000,
+            end_value=1e-6,
+        )
+
+        optimiser = optax.adam(lr_scheduler)
+
+        lr_transformer = default_adaptive_lr_transform(
+            PATIENCE=20,
+            COOLDOWN=0,
+            FACTOR=0.5,
+            RTOL=1e-4,
+            ACCUMULATION_SIZE=100,
+        )
+
+        if not with_dropout:
+            model: nn.Module = BasicBlackBox(**model_config)
+        else:
+            model = MLPBlackBox(**model_config)
+
+        def callback(
+            model_params: VariableDict,
+            opt_state: optax.OptState,
+            history: list[HistoryEntry],
+        ) -> None:
+
+            # Checkpoint the model
+            with tempfile.TemporaryDirectory() as tmpdir:
+                model_path = save_model(
+                    path=str(tmpdir),
+                    experiment_identifier="test",
+                    pulse_sequence=pulse_sequence,
+                    hamiltonian=rotating_transmon_hamiltonian,
+                    model_config=model_config,
+                    model_params=model_params,
+                    history=history,
+                    with_auto_datetime=False,
+                )
+
+                # Report the loss and val_loss to tune
+                train.report(
+                    metrics={
+                        "val_loss": history[-1].val_loss,
+                        "loss": history[-1].loss,
+                    },
+                    checkpoint=train.Checkpoint.from_directory(tmpdir),
+                )
+
+            return None
+
+        model_opt_params, opt_state, history = train_model(
+            key=train_key,
+            model=model,
+            optimiser=optimiser,
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
+            num_epoch=1500,
+            lr_transformer=lr_transformer,
+            callback=callback, # type: ignore
+            progress_bar=False,
+        )
+
+        return {
+            "val_loss": history[-1].val_loss,
+            "loss": history[-1].loss,
+        }
+
+    return trainable
+
+
+class SearchAlgo(Enum):
+    HYPEROPT = "hyperopt"
+    OPTUNA = "optuna"
+
+
+def hypertuner(
+    trainable: Callable,
+    pulse_parameters: jnp.ndarray,
+    unitaries: jnp.ndarray,
+    expectations: jnp.ndarray,
+    model_key: jnp.ndarray,
+    train_key: jnp.ndarray,
+    num_samples: int = 100,
+    search_algo: SearchAlgo = SearchAlgo.HYPEROPT,
+):
+
+    search_space = {
+        "feature_size": tune.randint(5, 10),
+        "hidden_layer_1_1": tune.randint(5, 50),
+        "hidden_layer_1_2": tune.randint(5, 50),
+        "hidden_layer_2_1": tune.randint(5, 50),
+        "hidden_layer_2_2": tune.randint(5, 50),
+    }
+
+    current_best_params = [
+        {
+            "feature_size": 5,
+            "hidden_layer_1_1": 10,
+            "hidden_layer_1_2": 20,
+            "hidden_layer_2_1": 10,
+            "hidden_layer_2_2": 20,
+        }
+    ]
+
+    if search_algo == SearchAlgo.HYPEROPT:
+        search_algo_instance: Searcher = HyperOptSearch(
+            metric="val_loss", mode="min", points_to_evaluate=current_best_params
+        )
+    elif search_algo == SearchAlgo.OPTUNA:
+        search_algo_instance = OptunaSearch(metric="val_loss", mode="min")
+
+    tuner = tune.Tuner(
+        tune.with_parameters(
+            trainable,
+            pulse_parameters=pulse_parameters,
+            unitaries=unitaries,
+            expectations=expectations,
+            model_key=model_key,
+            train_key=train_key,
+        ),
+        tune_config=tune.TuneConfig(
+            search_alg=search_algo_instance,
+            metric="val_loss",
+            mode="min",
+            num_samples=num_samples,
+        ),
+        param_space=search_space,
+    )
+
+    results = tuner.fit()
+
+    return results
+
+
+def get_best_hypertuner_results(results):
+    with results.get_best_result(
+        metric="val_loss", mode="min"
+    ).checkpoint.as_directory() as checkpoint_dir:
+        model_state, hist, data_config = load_model(str(checkpoint_dir))
+    return model_state, hist, data_config
