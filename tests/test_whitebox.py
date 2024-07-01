@@ -157,6 +157,8 @@ def test_crosscheck_pennylane_difflax():
             t_eval=t_eval,
             hamiltonian=hamiltonian,
             y0=jnp.eye(2, dtype=jnp.complex64),
+            t0=0,
+            t1=pulse_sequence.pulse_length_dt * time_step,
         )
     )
 
@@ -183,6 +185,8 @@ def test_crosscheck_pennylane_difflax():
             t_eval=t_eval,
             hamiltonian=rotating_hamiltonian,
             y0=jnp.eye(2, dtype=jnp.complex64),
+            t0=0,
+            t1=pulse_sequence.pulse_length_dt * time_step,
         )
     )
     auto_rotated_unitaries = jitted_simulator(hamil_params)
@@ -246,6 +250,8 @@ def test_crosscheck_pennylane_difflax():
         t_eval=t_eval,
         hamiltonian=rotating_hamiltonian,
         y0=jnp.eye(2, dtype=jnp.complex64),
+        t0=0,
+        t1=pulse_sequence.pulse_length_dt * time_step,
     )
 
     unitaries_tuple = [

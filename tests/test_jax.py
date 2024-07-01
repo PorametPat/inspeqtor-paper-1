@@ -238,7 +238,7 @@ def test_end_to_end(tmp_path):
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
         num_epoch=2,
-        transform=transform,
+        lr_transformer=transform,
     )
 
 

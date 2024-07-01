@@ -1,7 +1,7 @@
 import specq_dev.shared as specq  # type: ignore
 from specq_dev.jax.pulse import construct_pulse_sequence_reader, JaxBasedPulseSequence  # type: ignore
+import specq_dev as sqd # type: ignore
 import jax.numpy as jnp
-
 import jax
 from typing import Callable
 import logging
@@ -13,20 +13,22 @@ import datetime
 import json
 from typing import Union, Callable
 import pandas as pd
-from .pulse import MultiDragPulse, DragPulse, MultiDragPulseV2
 from specq_dev.test_utils import JaxDragPulse  # type: ignore
 import torch
 from torch.utils.data import Dataset
 
 from os import PathLike
-from .simulator import simulator as sqjs_simulator, signal_func_v3, SignalParameters
 from functools import partial
-from .utils.helper import rotating_transmon_hamiltonian
 
 from torch import Generator
 from torch.utils.data import DataLoader, Subset
-from .core import HistoryEntry
 from flax.typing import VariableDict
+
+from .pulse import MultiDragPulse, DragPulse, MultiDragPulseV2
+from .typing import HistoryEntry
+from .utils.helper import rotating_transmon_hamiltonian
+from .simulator import simulator as sqjs_simulator, signal_func_v3, SignalParameters
+from .pennylane.simulator import get_simulator, rotating_duffling_oscillator_hamiltonian
 
 def generate_path_with_datetime(sub_dir: Union[str, None] = None):
     return os.path.join(
@@ -159,7 +161,7 @@ pulse_reader = construct_pulse_sequence_reader(
 )
 
 
-def load_data(path: PathLike):
+def load_data(path: PathLike) -> tuple[sqd.shared.ExperimentData, np.ndarray, np.ndarray, np.ndarray, JaxBasedPulseSequence, Callable]:
 
     # Load the data from the experiment
     exp_data = specq.ExperimentData.from_folder(path)
@@ -190,6 +192,8 @@ def load_data(path: PathLike):
             t_eval=t_eval,
             hamiltonian=hamiltonian,
             y0=jnp.eye(2, dtype=jnp.complex64),
+            t0=0,
+            t1=pulse_sequence.pulse_length_dt * dt,
         )
     )
 
@@ -220,6 +224,81 @@ def load_data(path: PathLike):
     )
 
 
+def load_data_old(
+    path: str,
+    hamiltonian=rotating_duffling_oscillator_hamiltonian,
+):
+    # Load the data from the experiment
+    exp_data = specq.ExperimentData.from_folder(path)
+
+    logging.info(f"Loaded data from {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}")
+
+    # Setup the simulator
+    dt = exp_data.experiment_config.device_cycle_time_ns
+    qubit_info = exp_data.experiment_config.qubits[0]
+    # pulse_sequence = get_pulse_sequence()
+    pulse_sequence = pulse_reader(path)
+    t_eval = jnp.linspace(
+        0, pulse_sequence.pulse_length_dt * dt, pulse_sequence.pulse_length_dt
+    )
+    simulator = get_simulator(
+        qubit_info=qubit_info, t_eval=t_eval, hamiltonian=hamiltonian
+    )
+
+    # Get the waveforms for each pulse parameters to get the unitaries
+    _waveforms = []
+    for pulse_params in exp_data.get_parameters_dict_list():
+        _waveforms.append(pulse_sequence.get_waveform(pulse_params))
+
+    waveforms = jnp.array(_waveforms)
+
+    logging.info(
+        f"Prepared the waveforms for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
+    )
+
+    # Check if the unitaries are already calculated
+    # if os.path.exists(f"{path}/unitaries.npy"):
+    #     unitaries = np.load(f"{path}/unitaries.npy")
+    #     logging.info(
+    #         f"Loaded the unitaries for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
+    #     )
+    # else:
+
+    # jit the simulator
+    jitted_simulator = jax.jit(simulator)
+    # batch the simulator
+    batched_simulator = jax.vmap(jitted_simulator, in_axes=(0))
+    # Get the unitaries
+    unitaries = batched_simulator(waveforms)
+
+    logging.info(
+        f"Got the unitaries for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
+    )
+
+    # Get the final unitaries
+    unitaries = np.array(unitaries[:, -1, :, :])
+        # Save the unitaries
+        # np.save(f"{path}/unitaries.npy", unitaries)
+
+    # Get the expectation values from the experiment
+    expectations = exp_data.get_expectation_values()
+    # Get the pulse parameters
+    pulse_parameters = exp_data.parameters
+
+    logging.info(
+        f"Finished preparing the data for the experiment {exp_data.experiment_config.EXPERIMENT_IDENTIFIER}"
+    )
+
+    return (
+        exp_data,
+        pulse_parameters,
+        unitaries,
+        expectations,
+        pulse_sequence,
+        simulator,
+    )
+
+
 class SpecQDataset(Dataset):
     def __init__(
         self,
@@ -243,7 +322,6 @@ class SpecQDataset(Dataset):
             # Expectation values
             "y": self.expectation_values[idx],
         }
-
 
 
 def prepare_dataset(
@@ -304,9 +382,13 @@ def prepare_dataset(
 
     assert (train_val_ratio * len(dataset)) % 1 == 0, "The train_val_ratio is invalid, "
 
-    assert train_val_ratio > batch_size_ratio, "batch_size_ratio is larger than train_val_ratio"
+    assert (
+        train_val_ratio > batch_size_ratio
+    ), "batch_size_ratio is larger than train_val_ratio"
 
-    assert int(train_val_ratio % batch_size_ratio) == 0, "train_val_ratio must be multiplier of batch_size_ratio"
+    assert (
+        int(train_val_ratio % batch_size_ratio) == 0
+    ), "train_val_ratio must be multiplier of batch_size_ratio"
 
     # Randomly split dataset into training and validation
     val_indices = jax.random.choice(
@@ -328,3 +410,18 @@ def prepare_dataset(
     )
 
     return train_dataloader, val_dataloader
+
+
+def extract_data(
+    dataloader: DataLoader,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    
+    # Assert that the dataloader has dataset attribute and the dataset has dataset attribute
+    assert hasattr(dataloader, "dataset"), "The dataloader does not have dataset attribute"
+    assert hasattr(dataloader.dataset, "dataset"), "The dataloader.dataset does not have dataset attribute"
+
+    return (
+        dataloader.dataset.dataset.pulse_parameters,
+        dataloader.dataset.dataset.unitaries,
+        dataloader.dataset.dataset.expectation_values,
+    )

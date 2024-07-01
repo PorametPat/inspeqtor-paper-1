@@ -2,8 +2,8 @@ import jax.numpy as jnp
 from ..simulator import SignalParameters
 from typing import Callable
 from specq_dev.shared import QubitInformation # type: ignore
-from ..core import X, Y, Z
-
+from .constant import X, Y, Z
+from functools import partial
 
 def check_diagonal_matrix(matrix):
     return jnp.count_nonzero(matrix - jnp.diag(jnp.diagonal(matrix))) == 0
@@ -58,3 +58,4 @@ def transmon_hamiltonian(
     a1 = 2 * jnp.pi * qubit_info.drive_strength
 
     return ((a0 / 2) * Z) + (a1 * signal(params, t) * X)
+

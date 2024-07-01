@@ -86,6 +86,15 @@ def signal_func_v3(get_envelope: Callable, drive_frequency: float, dt: float):
     return signal
 
 
+# decorator to mark that function is wrong and should not be used
+def deprecated(func):
+    def wrapper(*args, **kwargs):
+        print(f"Function {func.__name__} is deprecated and should not be used.")
+        return func(*args, **kwargs)
+
+    return wrapper
+
+@deprecated
 def signal_func_v4(
     pulse_sequence: JaxBasedPulseSequence, drive_frequency: float, dt: float
 ):
@@ -133,6 +142,8 @@ def simulator(
     t_eval: jnp.ndarray,
     hamiltonian: Callable,
     y0: jnp.ndarray,
+    t0: float,
+    t1: float,
     max_steps: int = int(2**16),
 ):
 
@@ -147,11 +158,15 @@ def simulator(
     # solver = Dopri8()
     solver = diffrax.Tsit5()
 
+    # # If t_eval is float then convert it to array
+    # if isinstance(t_eval, (int, float)):
+    #     t_eval = jnp.array([t_eval])
+
     solution = diffrax.diffeqsolve(
         term,
         solver,
-        t0=t_eval[0],
-        t1=t_eval[-1],
+        t0=t0,
+        t1=t1,
         dt0=None,
         stepsize_controller=diffrax.PIDController(
             rtol=1e-7,
@@ -159,6 +174,7 @@ def simulator(
         ),
         y0=y0,
         args=args,
+        # saveat=diffrax.SaveAt(ts=jnp.array(t_eval)),
         saveat=diffrax.SaveAt(ts=t_eval),
         max_steps=max_steps,
     )
