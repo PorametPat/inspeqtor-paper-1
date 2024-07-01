@@ -15,64 +15,19 @@ from jaxopt import ProjectedGradient  # type: ignore
 from jaxopt.projection import projection_box  # type: ignore
 from dataclasses import dataclass
 from flax.typing import VariableDict
-from .simulator import SimulatorFnV2, SignalParameters
 from specq_dev.shared import ParametersDictType
+from enum import Enum
+from ray.tune.search.hyperopt import HyperOptSearch
+from ray.tune.search.optuna import OptunaSearch
+from ray.tune.search import Searcher
+import tempfile
+from ray import tune, train
 
-
-class LossFn(Protocol):
-
-    def __call__(
-        self,
-        params: VariableDict,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
-        unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
-        expectation_values: Float[Array, "batch num_expectations"],  # noqa: F722
-        training: bool,
-    ) -> Float[Array, "1"]: ...
-
-
-class TrainStepFn(Protocol):
-
-    def __call__(
-        self,
-        params: VariableDict,
-        opt_state: optax.OptState,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
-        unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
-        expectations: Float[Array, "batch num_expectations"],  # noqa: F722
-        dropout_key: jnp.ndarray,
-        transform_state: Union[None, optax.OptState],
-    ) -> tuple[Any, Any, float]: ...
-
-
-class TestStepFn(Protocol):
-
-    def __call__(
-        self,
-        params: VariableDict,
-        pulse_parameters: Float[Array, "batch num_pulses num_features"],  # noqa: F722
-        unitaries: Complex[Array, "batch dim dim"],  # noqa: F722
-        expectations: Float[Array, "batch num_expectations"],  # noqa: F722
-    ) -> float: ...
-
-
-@dataclass
-class HistoryEntry:
-    epoch: int
-    step: int
-    loss: float
-    global_step: int
-    val_loss: float | None = None
-    lr: float | None = None
-
-
-class CallbackFn(Protocol):
-    def __call__(
-        self,
-        params: VariableDict,
-        opt_state: optax.OptState,
-        history: list[HistoryEntry],
-    ) -> None: ...
+from .data import prepare_dataset, save_model, load_model
+from .utils.helper import rotating_transmon_hamiltonian
+from .model import BasicBlackBox, MLPBlackBox
+from .simulator import SimulatorFnV2, SignalParameters
+from .typing import LossFn, TrainStepFn, TestStepFn, HistoryEntry, CallbackFn
 
 
 def calculate_exp(
@@ -367,7 +322,7 @@ def with_validation_train(
                     HistoryEntry(
                         epoch=epoch,
                         step=i,
-                        loss=float(loss),
+                        batch_loss=float(loss),
                         global_step=epoch * total_len + i,
                     )
                 )
@@ -375,6 +330,9 @@ def with_validation_train(
                 total_loss += loss
 
                 bar()
+            
+            epoch_loss = float(total_loss / total_len)
+            history[-1].epoch_loss = epoch_loss
 
             # Validation
             val_loss = 0.0
@@ -457,11 +415,7 @@ def linear_schedule_with_warmup(
     return lr_scheduler
 
 
-X, Y, Z = (
-    jnp.array(specq.Operator.from_label("X")),
-    jnp.array(specq.Operator.from_label("Y")),
-    jnp.array(specq.Operator.from_label("Z")),
-)
+from .utils.constant import X, Y, Z
 
 
 def gate_loss(
@@ -613,17 +567,6 @@ def train_model(
     return model_params, opt_state, history
 
 
-from .data import prepare_dataset, save_model, load_model
-from enum import Enum
-from .model import BasicBlackBox, MLPBlackBox
-from ray.tune.search.hyperopt import HyperOptSearch
-from ray.tune.search.optuna import OptunaSearch
-from ray.tune.search import Searcher
-import tempfile
-from ray import tune, train
-from .utils.helper import rotating_transmon_hamiltonian
-
-
 def default_trainable(
     pulse_sequence: JaxBasedPulseSequence,
     with_dropout: bool = False,
@@ -664,7 +607,7 @@ def default_trainable(
             end_value=1e-6,
         )
 
-        optimiser = optax.adam(lr_scheduler)
+        optimiser = optax.adamw(lr_scheduler)
 
         lr_transformer = default_adaptive_lr_transform(
             PATIENCE=20,
@@ -684,27 +627,37 @@ def default_trainable(
             opt_state: optax.OptState,
             history: list[HistoryEntry],
         ) -> None:
+            
+            # Check if history[-1].step is divisible by 100
+            if (history[-1].global_step + 1) % 100 == 0:
+                # Checkpoint the model
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    model_path = save_model(
+                        path=str(tmpdir),
+                        experiment_identifier="test",
+                        pulse_sequence=pulse_sequence,
+                        hamiltonian=rotating_transmon_hamiltonian,
+                        model_config=model_config,
+                        model_params=model_params,
+                        history=history,
+                        with_auto_datetime=False,
+                    )
 
-            # Checkpoint the model
-            with tempfile.TemporaryDirectory() as tmpdir:
-                model_path = save_model(
-                    path=str(tmpdir),
-                    experiment_identifier="test",
-                    pulse_sequence=pulse_sequence,
-                    hamiltonian=rotating_transmon_hamiltonian,
-                    model_config=model_config,
-                    model_params=model_params,
-                    history=history,
-                    with_auto_datetime=False,
-                )
-
+                    # Report the loss and val_loss to tune
+                    train.report(
+                        metrics={
+                            "val_loss": history[-1].val_loss,
+                            "batch_loss": history[-1].batch_loss,
+                        },
+                        checkpoint=train.Checkpoint.from_directory(tmpdir),
+                    )
+            else:
                 # Report the loss and val_loss to tune
                 train.report(
                     metrics={
                         "val_loss": history[-1].val_loss,
-                        "loss": history[-1].loss,
+                        "batch_loss": history[-1].batch_loss,
                     },
-                    checkpoint=train.Checkpoint.from_directory(tmpdir),
                 )
 
             return None
@@ -717,13 +670,13 @@ def default_trainable(
             val_dataloader=val_dataloader,
             num_epoch=1500,
             lr_transformer=lr_transformer,
-            callback=callback, # type: ignore
+            callback=callback,  # type: ignore
             progress_bar=False,
         )
 
         return {
             "val_loss": history[-1].val_loss,
-            "loss": history[-1].loss,
+            "batch_loss": history[-1].batch_loss,
         }
 
     return trainable
@@ -770,6 +723,13 @@ def hypertuner(
     elif search_algo == SearchAlgo.OPTUNA:
         search_algo_instance = OptunaSearch(metric="val_loss", mode="min")
 
+    run_config = train.RunConfig(
+        name="tune_experiment",
+        checkpoint_config=train.CheckpointConfig(
+            num_to_keep=10,
+        )
+    )
+
     tuner = tune.Tuner(
         tune.with_parameters(
             trainable,
@@ -786,6 +746,7 @@ def hypertuner(
             num_samples=num_samples,
         ),
         param_space=search_space,
+        run_config=run_config,
     )
 
     results = tuner.fit()

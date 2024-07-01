@@ -1,0 +1,49 @@
+{
+    "pulses": [
+        {
+            "total_length": 80,
+            "num_drag": 1,
+            "min_amp": 0,
+            "max_amp": 1,
+            "min_sigma": 7,
+            "max_sigma": 9,
+            "min_beta": -2,
+            "max_beta": 2,
+            "_name": "MultiDragPulseV2"
+        },
+        {
+            "total_length": 80,
+            "num_drag": 2,
+            "min_amp": 0,
+            "max_amp": 1,
+            "min_sigma": 5,
+            "max_sigma": 7,
+            "min_beta": -2,
+            "max_beta": 2,
+            "_name": "MultiDragPulseV2"
+        },
+        {
+            "total_length": 80,
+            "num_drag": 3,
+            "min_amp": 0,
+            "max_amp": 1,
+            "min_sigma": 3,
+            "max_sigma": 5,
+            "min_beta": -2,
+            "max_beta": 2,
+            "_name": "MultiDragPulseV2"
+        },
+        {
+            "total_length": 80,
+            "num_drag": 4,
+            "min_amp": 0,
+            "max_amp": 1,
+            "min_sigma": 1,
+            "max_sigma": 3,
+            "min_beta": -2,
+            "max_beta": 2,
+            "_name": "MultiDragPulseV2"
+        }
+    ],
+    "pulse_length_dt": 80
+}

@@ -305,3 +305,90 @@ class MultiDragPulseV2(JaxBasedPulse):
         return lambda t: sum([envelope(t) for envelope in envelopes]) / (
             2**self.num_drag
         )
+
+
+
+@dataclass
+class MultiDragPulseV3(JaxBasedPulse):
+    total_length: int
+
+    num_drag: int = 1
+    min_amp: float = 0
+    max_amp: float = 1
+    min_sigma: float = 0.1
+    max_sigma: float = 10
+    min_beta: float = 0.1
+    max_beta: float = 10
+
+    def __post_init__(self):
+        self.t_eval = jnp.arange(self.total_length)
+
+    def sample_params(self, key: jnp.ndarray) -> specq.ParametersDictType:
+
+        params: specq.ParametersDictType = dict()
+        for i in range(self.num_drag):
+
+            # Split the key
+            key, amp_key, sigma_key, beta_key = jax.random.split(key, num=4)
+            random_amps = jax.random.uniform(
+                amp_key, shape=(1,), minval=self.min_amp, maxval=self.max_amp
+            )
+
+            random_sigmas = jax.random.uniform(
+                sigma_key, shape=(1,), minval=self.min_sigma, maxval=self.max_sigma
+            )
+
+            random_betas = jax.random.uniform(
+                beta_key, shape=(1,), minval=self.min_beta, maxval=self.max_beta
+            )
+
+            param = {
+                f"{i}/amp": float(random_amps[0]),
+                f"{i}/sigma": float(random_sigmas[0]),
+                f"{i}/beta": float(random_betas[0]),
+            }
+            params.update(param)
+
+        return params
+
+    def get_bounds(self) -> tuple[specq.ParametersDictType, specq.ParametersDictType]:
+
+        lower = {}
+        upper = {}
+
+        for i in range(self.num_drag):
+            lower[f"{i}/amp"] = self.min_amp
+            lower[f"{i}/sigma"] = self.min_sigma
+            lower[f"{i}/beta"] = self.min_beta
+
+            upper[f"{i}/amp"] = self.max_amp
+            upper[f"{i}/sigma"] = self.max_sigma
+            upper[f"{i}/beta"] = self.max_beta
+
+        return lower, upper
+
+    def get_waveform(self, params: specq.ParametersDictType) -> jnp.ndarray:
+        return jnp.zeros((self.total_length, ))
+
+    def get_envelope(self, params: dict[str, float]) -> Callable[..., Any]:
+
+        # The center location of each drag pulse
+        center_locations = center_location(self.num_drag, self.total_length)
+
+        # Callables
+        envelopes = []
+        for idx, center in enumerate(center_locations):
+
+            envelopes.append(
+                drag_envelope(
+                    params[f"{idx}/amp"],
+                    params[f"{idx}/sigma"],
+                    params[f"{idx}/beta"],
+                    center,
+                )
+            )
+
+        # Return the sum of the envelopes
+        return lambda t: sum([envelope(t) for envelope in envelopes]) / (
+            2**self.num_drag
+        )

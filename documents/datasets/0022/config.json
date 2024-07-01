@@ -1,0 +1,155 @@
+{
+    "qubits": [
+        {
+            "unit": "GHz",
+            "qubit_idx": 0,
+            "anharmonicity": -0.20640003780600244,
+            "frequency": 5.243551756282787,
+            "drive_strength": 0.11223961440467757,
+            "date": "2024-05-02 01:45:16"
+        }
+    ],
+    "expectation_values_order": [
+        {
+            "initial_state": "+",
+            "observable": "X"
+        },
+        {
+            "initial_state": "-",
+            "observable": "X"
+        },
+        {
+            "initial_state": "r",
+            "observable": "X"
+        },
+        {
+            "initial_state": "l",
+            "observable": "X"
+        },
+        {
+            "initial_state": "0",
+            "observable": "X"
+        },
+        {
+            "initial_state": "1",
+            "observable": "X"
+        },
+        {
+            "initial_state": "+",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "-",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "r",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "l",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "0",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "1",
+            "observable": "Y"
+        },
+        {
+            "initial_state": "+",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "-",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "r",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "l",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "0",
+            "observable": "Z"
+        },
+        {
+            "initial_state": "1",
+            "observable": "Z"
+        }
+    ],
+    "parameter_names": [
+        [
+            "0/amp",
+            "0/sigma",
+            "0/beta"
+        ],
+        [
+            "0/amp",
+            "0/sigma",
+            "0/beta",
+            "1/amp",
+            "1/sigma",
+            "1/beta"
+        ],
+        [
+            "0/amp",
+            "0/sigma",
+            "0/beta",
+            "1/amp",
+            "1/sigma",
+            "1/beta",
+            "2/amp",
+            "2/sigma",
+            "2/beta"
+        ],
+        [
+            "0/amp",
+            "0/sigma",
+            "0/beta",
+            "1/amp",
+            "1/sigma",
+            "1/beta",
+            "2/amp",
+            "2/sigma",
+            "2/beta",
+            "3/amp",
+            "3/sigma",
+            "3/beta"
+        ]
+    ],
+    "backend_name": "ibm_kawasaki",
+    "shots": 3000,
+    "EXPERIMENT_IDENTIFIER": "0022",
+    "EXPERIMENT_TAGS": [
+        "0022",
+        "random_drag",
+        "MCMD",
+        "test_2"
+    ],
+    "description": "The experiment to test random drag sequence",
+    "device_cycle_time_ns": 0.2222222222222222,
+    "sequence_duration_dt": 80,
+    "instance": "utokyo-kawasaki/keio-internal/keio-students",
+    "sample_size": 700,
+    "date": "2024-05-02 01:43:45",
+    "additional_info": {
+        "MASTER_KEY_SEED": 0,
+        "model_config": {
+            "feature_size": 6,
+            "hidden_sizes_1": [
+                39,
+                13
+            ],
+            "hidden_sizes_2": [
+                44,
+                21
+            ]
+        }
+    }
+}

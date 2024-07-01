@@ -22,16 +22,10 @@ qiskit_ibm_runtime
 qiskit_experiments
 typer
 
-# For AxSearch
-ax-platform
-sqlalchemy
-
-# BOHB
-hpbandster
-ConfigSpace
-
 # For optuna
 optuna
+
+ray[data,train,tune,serve]
 
 # awscli, is not required for the package.
 flake8
