@@ -1,0 +1,38 @@
+# local package
+-e .
+# git+https://github.com/PorametPat/specq-shared.git@main
+
+# external requirements
+pennylane
+jax 
+jaxlib
+pandas
+optax
+flax
+jaxopt
+torch
+qiskit
+jaxtyping
+matplotlib
+orbax-checkpoint
+diffrax
+alive-progress
+qiskit-aer
+qiskit_ibm_runtime
+qiskit_experiments
+typer
+seaborn
+
+# For optuna
+optuna
+
+ray[data,train,tune,serve]
+
+# awscli, is not required for the package.
+flake8
+python-dotenv>=0.5.1
+pytest
+# ipykernel for jupyter notebooks
+ipykernel 
+ipytest
+ipywidgets
