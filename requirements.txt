@@ -22,6 +22,7 @@ qiskit_ibm_runtime
 qiskit_experiments
 typer
 seaborn
+forest-benchmarking
 
 # For optuna
 optuna
