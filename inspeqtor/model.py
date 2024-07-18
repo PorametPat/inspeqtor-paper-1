@@ -757,7 +757,6 @@ def gate_loss_v2(
     model: nn.Module,
     model_params: VariableDict,
     simulator: SimulatorFnV2,
-    # pulse_sequence: JaxBasedPulseSequence,
     array_to_list_of_params: Callable,
     target_unitary: jnp.ndarray,
 ):
@@ -797,6 +796,36 @@ def gate_loss_v2(
 
     # Calculate the loss
     loss += (1 - gate_fi) ** 2
+
+    return loss
+
+def pure_gate_loss(
+    x: jnp.ndarray,
+    simulator: SimulatorFnV2,
+    array_to_list_of_params: Callable,
+    target_unitary: jnp.ndarray,
+):
+    fidelities_dict: dict[str, jnp.ndarray] = {}
+    # x is the pulse parameters in the flattened form
+    # pulse_params = pulse_sequence.array_to_list_of_params(x)
+    pulse_params = array_to_list_of_params(x)
+
+    # Get the waveforms
+    signal_params = SignalParameters(
+        pulse_params=pulse_params,
+        phase=0,
+    )
+
+    # Get the unitaries
+    unitaries = simulator(signal_params)
+
+    gate_fi = avg_gate_fidelity_from_superop(
+        to_superop(unitaries[-1]), to_superop(target_unitary)
+    )
+    fidelities_dict["gate"] = gate_fi
+
+    # Calculate the loss
+    loss = (1 - gate_fi) ** 2
 
     return loss
 

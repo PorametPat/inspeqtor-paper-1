@@ -161,7 +161,9 @@ def calculate_shots_expectation_value(
     ).mean()
 
 
-def test_calculate_shots_expectation_value():
+def test_calculate_shots_expectation_value(
+    key: jnp.ndarray,
+):
     initial_state = State.from_label("+", dm=True)
     projector = State.from_label("0", dm=True)
 
