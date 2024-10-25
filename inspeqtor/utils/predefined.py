@@ -3,16 +3,15 @@ import jax.numpy as jnp
 from dataclasses import dataclass
 import typing
 from ..data import (
-    ExpectationValue,
     QubitInformation,
     ExperimentConfiguration,
-    ExperimentData,
 )
 from ..pulse import JaxBasedPulse, JaxBasedPulseSequence
 from ..typing import ParametersDictType
 from ..physics import SignalParameters
 from ..constant import X, Y, Z, default_expectation_values_order
 from ..decorator import not_yet_tested
+
 
 def center_location(num_of_pulse_in_dd: int, total_time_dt: int | float):
     center_locations = (
@@ -43,6 +42,17 @@ def drag_envelope(
     return lambda t: final_amp * (f_prime(t) - f_prime(-1)) / (1 - f_prime(-1))
 
 
+def drag_envelope_v2(
+    amp: float, sigma: float, beta: float, center: float, final_amp: float = 1.0
+):
+    # https://docs.quantum.ibm.com/api/qiskit/qiskit.pulse.library.Drag_class.rst#drag
+
+    g = lambda t: jnp.exp(-((t - center) ** 2) / (2 * sigma**2))
+    g_prime = lambda t: amp * (g(t) - g(-1)) / (1 - g(-1))
+
+    return lambda t: final_amp * g_prime(t) * (1 + 1j * beta * (t - center) / sigma**2)
+
+
 @dataclass
 class MultiDragPulseV2(JaxBasedPulse):
     total_length: int
@@ -54,9 +64,11 @@ class MultiDragPulseV2(JaxBasedPulse):
     max_sigma: float = 10
     min_beta: float = 0.1
     max_beta: float = 10
+    drag_version: int = 1
 
     def __post_init__(self):
         self.t_eval = jnp.arange(self.total_length)
+        self.drag_func = drag_envelope_v2 if self.drag_version == 2 else drag_envelope
 
     def sample_params(self, key: jnp.ndarray) -> ParametersDictType:
 
@@ -102,28 +114,6 @@ class MultiDragPulseV2(JaxBasedPulse):
 
         return lower, upper
 
-    def get_waveform_manual(self, params: ParametersDictType) -> jnp.ndarray:
-
-        # The center location of each drag pulse
-        center_locations = center_location(self.num_drag, self.total_length)
-
-        # Initialize the base pulse
-        base_pulse = jnp.zeros(self.total_length, dtype=jnp.complex64)
-
-        # For each drag pulse, add the drag envelope
-        for idx, center in enumerate(center_locations):
-            base_pulse += drag_envelope(
-                params[f"{idx}/amp"],
-                params[f"{idx}/sigma"],
-                params[f"{idx}/beta"],
-                center,
-            )(self.t_eval)
-
-        # Normalize the pulse by 1 / (2 ** num_drag ) to avoid the pulse amplitude to be too large
-        base_pulse /= 2**self.num_drag
-
-        return base_pulse
-
     def get_envelope(
         self, params: dict[str, float]
     ) -> typing.Callable[..., typing.Any]:
@@ -136,7 +126,7 @@ class MultiDragPulseV2(JaxBasedPulse):
         for idx, center in enumerate(center_locations):
 
             envelopes.append(
-                drag_envelope(
+                self.drag_func(
                     params[f"{idx}/amp"],
                     params[f"{idx}/sigma"],
                     params[f"{idx}/beta"],
@@ -153,7 +143,14 @@ class MultiDragPulseV2(JaxBasedPulse):
         return self.get_envelope(params)(self.t_eval)
 
 
-def get_multi_drag_pulse_sequence_v2() -> JaxBasedPulseSequence:
+def get_multi_drag_pulse_sequence_v2(
+    drag_version: int = 1,
+    min_amp: float = 0,
+    max_amp: float = 1,
+    min_beta: float = -2,
+    max_beta: float = 2,
+    total_num_order: int = 4,
+) -> JaxBasedPulseSequence:
 
     pulse_length_dt = 80
     sigma_range = [(7, 9), (5, 7), (3, 5), (1, 3)]
@@ -163,14 +160,15 @@ def get_multi_drag_pulse_sequence_v2() -> JaxBasedPulseSequence:
             MultiDragPulseV2(
                 total_length=pulse_length_dt,
                 num_drag=i,
-                min_amp=0,
-                max_amp=1,
+                min_amp=min_amp,
+                max_amp=max_amp,
                 min_sigma=sigma_range[i - 1][0],
                 max_sigma=sigma_range[i - 1][1],
-                min_beta=-2,
-                max_beta=2,
+                min_beta=min_beta,
+                max_beta=max_beta,
+                drag_version=drag_version,
             )
-            for i in range(1, 5)
+            for i in range(1, total_num_order + 1)
         ],
         pulse_length_dt=pulse_length_dt,
     )
@@ -188,10 +186,19 @@ def get_mock_qubit_information() -> QubitInformation:
     )
 
 
-def get_mock_prefined_exp_v1(sample_size: int = 10, shots: int = 1000):
+def get_mock_prefined_exp_v1(
+    sample_size: int = 10,
+    shots: int = 1000,
+    get_qubit_information_fn: typing.Callable[
+        [], QubitInformation
+    ] = get_mock_qubit_information,
+    get_pulse_sequence_fn: typing.Callable[
+        [], JaxBasedPulseSequence
+    ] = get_multi_drag_pulse_sequence_v2,
+):
 
-    qubit_info = get_mock_qubit_information()
-    pulse_sequence = get_multi_drag_pulse_sequence_v2()
+    qubit_info = get_qubit_information_fn()
+    pulse_sequence = get_pulse_sequence_fn()
 
     config = ExperimentConfiguration(
         qubits=[qubit_info],
@@ -456,12 +463,13 @@ def transmon_hamiltonian(
 
     return ((a0 / 2) * Z) + (a1 * signal(params, t) * X)
 
+
 @not_yet_tested
 def detune_hamiltonian(
     hamiltonian: typing.Callable[..., jnp.ndarray],
     detune: float,
 ):
-    
+
     def detuned_hamiltonian(params: SignalParameters, t: jnp.ndarray) -> jnp.ndarray:
         return hamiltonian(params, t) + detune * Z
 
@@ -479,27 +487,31 @@ def get_PSD_v1():
         return (1 / (freqency + 1) ** (alpha)) + (
             beta * jnp.exp(-((freqency - peak) ** 2) / 10)
         )
-    
+
     return spectrum
 
 
 @not_yet_tested
-def noise_from_spectrum(key: jnp.ndarray, spectrum: jnp.ndarray, frequency_space: jnp.ndarray):
-    
+def noise_from_spectrum(
+    key: jnp.ndarray, spectrum: jnp.ndarray, frequency_space: jnp.ndarray
+):
+
     phases = jax.random.uniform(key, shape=spectrum.shape) * 2 * jnp.pi
     dw = frequency_space[1] - frequency_space[0]
 
-    a = lambda t: 2 * jnp.sum(jnp.sqrt(spectrum * dw) * jnp.cos(frequency_space * t + phases))
+    a = lambda t: 2 * jnp.sum(
+        jnp.sqrt(spectrum * dw) * jnp.cos(frequency_space * t + phases)
+    )
     return a
 
 
 @not_yet_tested
 def signal_with_colored_noise(
-        signal: typing.Callable[[SignalParameters, jnp.ndarray], jnp.ndarray],
-        noise_func: typing.Callable[[jnp.ndarray], typing.Callable[[float], float]],
-        spectrum: typing.Callable[[jnp.ndarray], jnp.ndarray],
-        frequency_space: jnp.ndarray,
-    ):
+    signal: typing.Callable[[SignalParameters, jnp.ndarray], jnp.ndarray],
+    noise_func: typing.Callable[[jnp.ndarray], typing.Callable[[float], float]],
+    spectrum: typing.Callable[[jnp.ndarray], jnp.ndarray],
+    frequency_space: jnp.ndarray,
+):
     """Make the envelope function into signal with drive frequency
 
     Args:
@@ -519,8 +531,127 @@ def signal_with_colored_noise(
 
     # return signal
 
-    
     def noisy_signal(pulse_parameters: SignalParameters, t: jnp.ndarray):
-        return signal(pulse_parameters, t) + 0.01 * noise_func(pulse_parameters.noise_key, spectrum(frequency_space), frequency_space)(t)
+        return signal(pulse_parameters, t) + 0.01 * noise_func(
+            pulse_parameters.noise_key, spectrum(frequency_space), frequency_space
+        )(t)
 
     return noisy_signal
+
+
+@dataclass
+class MultiDragPulseV3(JaxBasedPulse):
+    total_length: int
+    order: int = 1
+    amp_bound: tuple[tuple[float]] = ((0, 1),)
+    sigma_bound: tuple[tuple[float]] = ((0.1, 5.0),)
+    global_beta_bound: tuple[float] = (-2.0, 2.0)
+
+    def __post_init__(self):
+        self.t_eval = jnp.arange(self.total_length, dtype=jnp.float64)
+
+    def sample_params(self, key: jnp.ndarray) -> ParametersDictType:
+
+        return sample_params(key, *self.get_bounds())
+
+    def get_bounds(self) -> tuple[ParametersDictType, ParametersDictType]:
+
+        lower = {}
+        upper = {}
+
+        idx = 0
+        for i in range(self.order):
+            for j in range(i + 1):
+                lower[f"{i}/{j}/amp"] = self.amp_bound[idx][0]
+                lower[f"{i}/{j}/sigma"] = self.sigma_bound[idx][0]
+
+                upper[f"{i}/{j}/amp"] = self.amp_bound[idx][1]
+                upper[f"{i}/{j}/sigma"] = self.sigma_bound[idx][1]
+
+                idx += 1
+
+        lower["beta"] = self.global_beta_bound[0]
+        upper["beta"] = self.global_beta_bound[1]
+
+        return lower, upper
+
+    def get_envelope(
+        self, params: dict[str, float]
+    ) -> typing.Callable[..., typing.Any]:
+
+        return get_envelope(params, self.order, self.total_length)
+
+    def get_waveform(self, params: ParametersDictType) -> jnp.ndarray:
+
+        return jax.vmap(self.get_envelope(params), in_axes=(0,))((self.t_eval))
+
+
+def sample_params(
+    key: jnp.ndarray, lower: dict[str, float], upper: dict[str:float]
+) -> ParametersDictType:
+
+    # This function is general because it is depend only on lower and upper structure
+    param = {}
+    param_names = lower.keys()
+    for name in param_names:
+        sample_key, key = jax.random.split(key)
+        param[name] = jax.random.uniform(
+            sample_key, shape=(), minval=lower[name], maxval=upper[name]
+        )
+
+    return jax.tree.map(float, param)
+
+
+def get_envelope(params: ParametersDictType, order: int, total_length: int):
+
+    # Callables
+    envelopes = []
+    for i in range(order):
+        # The center location of each drag pulse in the order
+        center_locations = center_location(i + 1, total_length)
+        for j, center in enumerate(center_locations):
+
+            envelopes.append(
+                drag_envelope_v2(
+                    amp=params[f"{i}/{j}/amp"],
+                    sigma=params[f"{i}/{j}/sigma"],
+                    beta=0,
+                    center=center,
+                    final_amp=1 / (2 ** (i + 1)),
+                )
+            )
+
+    real_part_fn = lambda t: jnp.real(sum([envelope(t) for envelope in envelopes]))
+    drag_part_fn = jax.grad(real_part_fn)
+
+    return lambda t: real_part_fn(t) + 1j * params["beta"] * drag_part_fn(t)
+
+
+def get_multi_drag_pulse_sequence_v3():
+    order = 4
+    amp_bounds = tuple([(0, 1)] * order)
+    order_amp_bound = tuple(
+        [amp_bound for idx, amp_bound in enumerate(amp_bounds) for _ in range(idx + 1)]
+    )
+    sigma_bounds = [(7, 9), (5, 7), (3, 5), (1, 3)]
+    order_sigma_bound = tuple(
+        [
+            sigma_bound
+            for idx, sigma_bound in enumerate(sigma_bounds)
+            for _ in range(idx + 1)
+        ]
+    )
+
+    pulse = MultiDragPulseV3(
+        total_length=80,
+        order=order,
+        amp_bound=order_amp_bound,
+        sigma_bound=order_sigma_bound,
+        global_beta_bound=(-2, 2),
+    )
+
+    pulse_sequence = JaxBasedPulseSequence(
+        pulse_length_dt=80,
+        pulses=[pulse],
+    )
+    return pulse_sequence

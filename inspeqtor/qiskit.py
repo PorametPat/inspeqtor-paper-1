@@ -1,3 +1,4 @@
+import os
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -47,7 +48,9 @@ def get_qubit_information_from_backend(
     anham, _ = backend_properties.qubit_property(qubit_idx, "anharmonicity")
     freq, _ = backend_properties.qubit_property(qubit_idx, "frequency")
 
-    assert isinstance(anham, float) and isinstance(freq, float)
+    assert (isinstance(anham, float) or isinstance(anham, int)) and isinstance(
+        freq, float
+    ), f"{anham} {freq} {type(anham)} {type(freq)}"
 
     anham = anham / (1e9)
     freq = freq / (1e9)
@@ -361,7 +364,9 @@ def save_quantum_circuits(quantum_circuits: list[QuantumCircuit], file_name: str
         qpy.dump(quantum_circuits, fd)  # type: ignore
 
 
-def load_quantum_circuits(file_name: str) -> list[QuantumCircuit]:
+
+
+def load_quantum_circuits(file_name: os.PathLike) -> list[QuantumCircuit]:
 
     with open(file_name, "rb") as fd:
         quantum_circuits = qpy.load(fd)
@@ -618,13 +623,15 @@ def create_circuit(
     num_qubits = len(qubit_indices)
 
     qrs = QuantumRegister(num_qubits)
-    crs = [ClassicalRegister(2, name=f"c{qidx}") for qidx in qubit_indices]
 
     if add_measure:
+        crs = [ClassicalRegister(1, name=f"c{qidx}") for qidx in qubit_indices]
         qc = QuantumCircuit(qrs, *crs, metadata=metadata)
     if enable_MCMD:
+        crs = [ClassicalRegister(2, name=f"c{qidx}") for qidx in qubit_indices]
         qc = QuantumCircuit(qrs, *crs, metadata=metadata)
-    else:
+
+    if not add_measure and not enable_MCMD:
         qc = QuantumCircuit(qrs)
 
     if initial_state == "1":
@@ -756,6 +763,7 @@ def prepare_parallel_experiment_v2(
     pulse_sequences: list[JaxBasedPulseSequence],
     keys: Sequence[jnp.ndarray],
     backend_properties: IBMQDeviceProperties,
+    enable_MCMD: bool = True,
 ) -> tuple[list[pd.DataFrame], list[QuantumCircuit]]:
 
     dataframes: list[pd.DataFrame] = []
@@ -798,7 +806,7 @@ def prepare_parallel_experiment_v2(
             add_pulse=not backend_properties.is_simulator,
             change_basis=True,
             add_measure=True,
-            enable_MCMD=True,
+            enable_MCMD=enable_MCMD,
             metadata=metadata,
         )
         combined_qcs.append(combined_qc)
@@ -878,7 +886,6 @@ def extract_results_v4(result, job_id: str, qubit_idx: int) -> pd.DataFrame:
 
         # Calculate the expectation values
         expval = (c_r10 - c_r01) / (c_r10 + c_r01)
-        non_mcmd_expval = (c_r10 + c_r00) - (c_r01 + c_r11)
 
         raw_rows.append(
             {
@@ -899,7 +906,9 @@ def extract_results_v4(result, job_id: str, qubit_idx: int) -> pd.DataFrame:
     return pd.DataFrame(raw_rows)
 
 
-def extract_results_v3(result, job_id: str, qubit_idx: int) -> pd.DataFrame:
+def extract_results_v3(
+    result, job_id: str, qubit_idx: int, mcmd: bool = True
+) -> pd.DataFrame:
 
     raw_rows = []
 
@@ -912,13 +921,23 @@ def extract_results_v3(result, job_id: str, qubit_idx: int) -> pd.DataFrame:
         )  # NOTE: .c because of the name of classical register https://docs.quantum.ibm.com/api/migration-guides/v2-primitives#steps-to-migrate-to-sampler-v2
         assert isinstance(counts, dict) and isinstance(num_shots, int)
 
-        c_r00 = counts.get("00", 0)  # |unknown>
-        c_r01 = counts.get("01", 0)  # |1>
-        c_r10 = counts.get("10", 0)  # |0>
-        c_r11 = counts.get("11", 0)  # |leakage>
+        c_r00, c_r01, c_r10, c_r11 = None, None, None, None
+        c_r0, c_r1 = None, None
 
-        # Calculate the expectation values
-        expval = (c_r10 - c_r01) / (c_r10 + c_r01)
+        if mcmd:
+            c_r00 = counts.get("00", 0)  # |unknown>
+            c_r01 = counts.get("01", 0)  # |1>
+            c_r10 = counts.get("10", 0)  # |0>
+            c_r11 = counts.get("11", 0)  # |leakage>
+
+            # Calculate the expectation values
+            expval = (c_r10 - c_r01) / (c_r10 + c_r01)
+        else:
+            c_r0 = counts.get("0", 0)
+            c_r1 = counts.get("1", 0)
+
+            # Calculate the expectation values
+            expval = (c_r0 - c_r1) / (c_r0 + c_r1)
 
         unique_id = res.metadata.get("circuit_metadata", {}).get("unique_id", -1)
         if unique_id == -1:
@@ -938,6 +957,8 @@ def extract_results_v3(result, job_id: str, qubit_idx: int) -> pd.DataFrame:
                 "counts/01": c_r01,
                 "counts/10": c_r10,
                 "counts/11": c_r11,
+                "counts/0": c_r0,
+                "counts/1": c_r1,
                 "status": "COMPLETED",
             }
         )

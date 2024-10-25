@@ -9,7 +9,8 @@ import numpy as np
 from pathlib import Path
 import torch
 from torch import Generator
-from torch.utils.data import DataLoader, Subset, Dataset
+import torch.utils
+from torch.utils.data import DataLoader, Subset, Dataset, random_split
 from .typing import ParametersDictType
 
 
@@ -70,8 +71,8 @@ class Operator:
         return operator
 
     @classmethod
-    def to_qutrit(cls, op: jnp.ndarray) -> jnp.ndarray:
-        return add_hilbert_level(op, x=jnp.array([1.0]))
+    def to_qutrit(cls, op: jnp.ndarray, value: float = 1.0) -> jnp.ndarray:
+        return add_hilbert_level(op, x=jnp.array([value]))
 
 
 @dataclass
@@ -112,13 +113,17 @@ class State:
             state_vec = cls._left
         else:
             raise ValueError(f"State {state} is not supported")
-        
+
         state_vec = state_vec.reshape(2, 1)
 
         return state_vec if not dm else jnp.outer(state_vec, state_vec.conj())
 
     @classmethod
     def to_qutrit(cls, state: jnp.ndarray) -> jnp.ndarray:
+
+        if state.shape != (2, 2):
+            raise ValueError("Shape of the state is not as expected, expect (2, 2)")
+
         return add_hilbert_level(state, x=jnp.array([0.0]))
 
 
@@ -580,7 +585,9 @@ class ExperimentData:
                 ] = expectation_value[0]
 
             drop_duplicates_row = rows.drop_duplicates(
-                subset=flatten_parameter_name_with_prefix(self.experiment_config.parameter_names)
+                subset=flatten_parameter_name_with_prefix(
+                    self.experiment_config.parameter_names
+                )
             )
             # Assert that only one row is returned
             assert drop_duplicates_row.shape[0] == 1
@@ -632,7 +639,8 @@ class ExperimentData:
         experiment_config = ExperimentConfiguration.from_file(_path)
         preprocess_data = pd.read_csv(
             # f"{path}/preprocess_data.csv",
-            _path / "preprocess_data.csv",
+            _path
+            / "preprocess_data.csv",
         )
 
         # Check if postprocessed_data exists
@@ -641,7 +649,8 @@ class ExperimentData:
         else:
             postprocessed_data = pd.read_csv(
                 # f"{path}/postprocessed_data.csv",
-                _path / "postprocessed_data.csv",
+                _path
+                / "postprocessed_data.csv",
             )
 
         return cls(
@@ -734,10 +743,9 @@ def prepare_dataset(
     pulse_parameters: jnp.ndarray,
     unitaries: jnp.ndarray,
     expectation_values: jnp.ndarray,
-    key: jnp.ndarray,
     batch_size_ratio: float = 0.1,
-    train_val_ratio: float = 0.2,
-):
+    ratio: list[float] = [0.8, 0.1, 0.1],
+) -> tuple[DataLoader, DataLoader, typing.Union[DataLoader, None]]:
 
     # Sanity check on the inputs
     # pulse_parameters.shape should be len(shape) == 2
@@ -777,54 +785,51 @@ def prepare_dataset(
         expectation_values_size == unitaries_size
     ), "Batch size of the pulse_parameters, expectation_values, unitaries are not the same"
 
-    g = Generator()
-    g.manual_seed(0)
-
     dataset = SpecQDataset(
         pulse_parameters=np.array(pulse_parameters),
         unitaries=np.array(_unitaries),  # only the final unitary
         expectation_values=np.array(_expectation_value),
     )
 
-    assert (train_val_ratio * len(dataset)) % 1 == 0, "The train_val_ratio is invalid, "
+    batch_size = int(pulse_parameters.shape[0] * batch_size_ratio)
 
-    assert (
-        train_val_ratio > batch_size_ratio
-    ), "batch_size_ratio is larger than train_val_ratio"
+    # Split the dataset into train, val, test
+    split_generator = Generator().manual_seed(0)
 
-    assert (
-        int(train_val_ratio % batch_size_ratio) == 0
-    ), "train_val_ratio must be multiplier of batch_size_ratio"
+    subsets = random_split(dataset, ratio, generator=split_generator)
 
-    # Randomly split dataset into training and validation
-    val_indices = jax.random.choice(
-        key, len(dataset), (int(train_val_ratio * len(dataset)),), replace=False
-    ).tolist()
-
-    training_indices = list(set([i for i in range(len(dataset))]) - set(val_indices))
-
-    train_dataset = Subset(dataset, training_indices)
-    val_dataset = Subset(dataset, val_indices)
-
-    _batch_size = int(pulse_parameters.shape[0] * batch_size_ratio)
-
+    train_generator = Generator().manual_seed(1)
     train_dataloader = DataLoader(
-        train_dataset, batch_size=_batch_size, shuffle=True, generator=g
-    )
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=_batch_size, shuffle=True, generator=g
+        subsets[0], batch_size=batch_size, shuffle=True, generator=train_generator
     )
 
-    return train_dataloader, val_dataloader
+    val_generator = Generator().manual_seed(2)
+    val_dataloader = DataLoader(
+        subsets[1], batch_size=batch_size, shuffle=True, generator=val_generator
+    )
+
+    if len(ratio) == 3:
+        test_generator = Generator().manual_seed(3)
+        test_dataloader = DataLoader(
+            subsets[2], batch_size=batch_size, shuffle=True, generator=test_generator
+        )
+    else:
+        test_dataloader = None
+
+    return train_dataloader, val_dataloader, test_dataloader
 
 
 def extract_data(
     dataloader: DataLoader,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    
+
     # Assert that the dataloader has dataset attribute and the dataset has dataset attribute
-    assert hasattr(dataloader, "dataset"), "The dataloader does not have dataset attribute"
-    assert hasattr(dataloader.dataset, "dataset"), "The dataloader.dataset does not have dataset attribute"
+    assert hasattr(
+        dataloader, "dataset"
+    ), "The dataloader does not have dataset attribute"
+    assert hasattr(
+        dataloader.dataset, "dataset"
+    ), "The dataloader.dataset does not have dataset attribute"
 
     return (
         dataloader.dataset.dataset.pulse_parameters,

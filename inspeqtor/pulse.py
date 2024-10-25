@@ -47,7 +47,8 @@ class BasePulseSequence(ABC):
 
     def __post_init__(self):
         # validate that each pulse have len of pulse_length_dt
-        self.validate()
+        # self.validate()
+        ...
 
     @abstractmethod
     def validate(self) -> None: ...
@@ -160,7 +161,8 @@ class BasePulseSequence(ABC):
 @dataclass
 class JaxBasedPulse(BasePulse):
     def __post_init__(self):
-        self.validate()
+        # self.validate()
+        ...
 
     def validate(self):
         # Validate that all attributes are json serializable

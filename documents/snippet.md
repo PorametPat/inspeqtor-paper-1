@@ -35,3 +35,75 @@ Batch benchmarking can be done using the following command:
 ```sh 
 python receipt.py batch-benchmark-gate-v2 0004_ibm_osaka_QCE2024_poster/q0 0004_ibm_osaka_QCE2024_poster/q0/ckpts --pure-gate
 ```
+
+For simple gate optimization, use the following command:
+```python
+pulse_sequence = sq.utils.predefined.get_multi_drag_pulse_sequence_v2()
+qubit_info = sq.utils.predefined.get_mock_qubit_information()
+
+dt = 2 / 9
+t_eval = jnp.linspace(
+    0, pulse_sequence.pulse_length_dt * dt, pulse_sequence.pulse_length_dt
+)
+
+hamiltonian = partial(
+    sq.utils.predefined.rotating_transmon_hamiltonian,
+    qubit_info=qubit_info,
+    signal=sq.physics.signal_func_v3(
+        get_envelope=pulse_sequence.get_envelope,
+        drive_frequency=qubit_info.frequency,
+        dt=dt,
+    ),
+)
+
+simulator = partial(
+    sq.physics.solver,
+    t_eval=t_eval,
+    hamiltonian=hamiltonian,
+    y0=jnp.eye(2, dtype=jnp.complex128),
+    t0=0,
+    t1=pulse_sequence.pulse_length_dt * dt,
+)
+jitted_simulator = jax.jit(simulator)
+
+sample_param = pulse_sequence.sample_params(jax.random.PRNGKey(0))
+signal_param = sq.physics.SignalParameters(pulse_params=sample_param, phase=0)
+result = jitted_simulator(signal_param)
+
+gate_optim_key = jax.random.PRNGKey(0)
+target_unitary = sq.constant.SX
+
+parameter_structure = pulse_sequence.get_parameter_names()
+
+array_to_list_of_params_callable = lambda x: sq.pulse.array_to_list_of_params(
+    x, parameter_structure
+)
+
+fun = lambda x: sq.model.pure_gate_loss(
+    x,
+    jitted_simulator,
+    array_to_list_of_params_callable,
+    target_unitary,
+)
+
+# jit the function
+fun = jax.jit(fun)
+
+_lower, _upper = pulse_sequence.get_bounds()
+lower = sq.pulse.list_of_params_to_array(_lower, parameter_structure)
+upper = sq.pulse.list_of_params_to_array(_upper, parameter_structure)
+
+pulse_params = pulse_sequence.sample_params(gate_optim_key)
+x0 = sq.pulse.list_of_params_to_array(pulse_params, parameter_structure)
+
+opt_params, state = sq.optimizer.optimize(x0, lower, upper, fun)
+
+opt_pulse_params = sq.pulse.array_to_list_of_params(
+    opt_params, parameter_structure
+)
+
+# Using jax.tree.map to convert the jax array to float
+opt_pulse_params = jax.tree.map(lambda x: float(x), opt_pulse_params)
+
+fig, ax = pulse_sequence.draw(opt_pulse_params)
+```

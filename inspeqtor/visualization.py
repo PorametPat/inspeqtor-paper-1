@@ -49,6 +49,7 @@ def plot_history(
     lr_schedule: typing.Union[typing.Callable[[int], float], None] = None,
     window_size: int = 50,
     with_epoch_loss: bool = False,
+    with_test_loss: bool = False,
     font_size: int = 12,
 ):
 
@@ -62,6 +63,12 @@ def plot_history(
 
     validate_x = validate[:, 0]
     validate_y = validate[:, 1]
+
+    if with_test_loss:
+        test = hist_df[["global_step", "test_loss"]].replace(0, jnp.nan).dropna().values
+
+        test_x = test[:, 0]
+        test_y = test[:, 1]
 
     # Determine the number of subplots
     num_subplots = 1 if lr_schedule is None else 2
@@ -86,6 +93,11 @@ def plot_history(
         alpha=0.25,
     )
 
+    if with_test_loss:
+        axes[0].plot(
+            test_x, test_y, label="Test loss (MSE)", color="#4ade80", alpha=0.25
+        )
+
     if with_epoch_loss:
 
         epoch = (
@@ -102,22 +114,39 @@ def plot_history(
     ma_train_y = pd.Series(train_y).rolling(window_size).mean().values
     ma_validate_y = pd.Series(validate_y).rolling(window_size).mean().values
 
+    if with_test_loss:
+        ma_test_y = pd.Series(test_y).rolling(window_size).mean().values
+
     # plot the moving average
     axes[0].plot(
-        train_x, ma_train_y, label="moving average Training loss (MSE)", color="#6a82fb"
+        train_x,
+        ma_train_y,
+        # label="moving average of training loss (MSE)",
+        color="#6a82fb",
     )
     axes[0].plot(
         validate_x,
         ma_validate_y,
-        label="moving average Validation loss (MSE)",
+        # label="moving average of validation loss (MSE)",
         color="#fc5c7d",
     )
+
+    if with_test_loss:
+        axes[0].plot(
+            test_x,
+            ma_test_y,
+            # label="moving average test loss (MSE)",
+            color="#4ade80",
+        )
 
     if with_epoch_loss:
         ma_epoch_y = pd.Series(epoch_y).rolling(window_size).mean().values
 
         axes[0].plot(
-            epoch_x, ma_epoch_y, label="moving average epoch_loss", color="#a6e22e"
+            epoch_x,
+            ma_epoch_y,
+            # label="moving average epoch_loss",
+            color="#a6e22e",
         )
 
     # From the data calculate the scale of the y-axis that is needed to plot the horizontal line
@@ -136,13 +165,13 @@ def plot_history(
 
     if lr_schedule is not None:
         lrs = [lr_schedule(step) for step in train_x]
-        axes[1].plot(train_x, lrs, label="learning_rate", color="#6a82fb")
+        axes[1].plot(train_x, lrs, label="Learning rate", color="#6a82fb")
         axes[1].legend(fontsize=font_size)
         axes[1].tick_params(axis="both", which="major", labelsize=font_size)
 
     # X-axis label
     axes[0].set_xlabel("Global iteration", fontsize=font_size)
-    axes[0].set_ylabel("loss", fontsize=font_size)
+    axes[0].set_ylabel("Loss (MSE)", fontsize=font_size)
     axes[0].tick_params(axis="both", which="major", labelsize=font_size)
 
     fig.tight_layout()
