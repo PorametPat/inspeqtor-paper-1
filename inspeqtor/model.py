@@ -996,6 +996,7 @@ def gate_loss_v3(
     model_params: VariableDict,
     simulator: SimulatorFnV2,
     target_unitary: jnp.ndarray,
+    list_of_params_to_array: Callable,
 ):
 
     # Get the waveforms
@@ -1006,6 +1007,8 @@ def gate_loss_v3(
 
     # Get the unitaries
     unitaries = simulator(signal_params)
+
+    x = list_of_params_to_array(pulse_params)
 
     # Evaluate model to get the Wo parameters
     Wo_params = model.apply(model_params, jnp.expand_dims(x, 0), training=False)
