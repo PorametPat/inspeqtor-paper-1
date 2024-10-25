@@ -13,7 +13,7 @@ from dataclasses import asdict
 import inspeqtor as isq
 
 
-@pytest.mark.skip(reason="This is an end-to-end test")
+# @pytest.mark.skip(reason="This is an end-to-end test")
 def test_end_to_end(tmp_path):
 
     d = tmp_path / "data"
@@ -119,11 +119,24 @@ def test_end_to_end(tmp_path):
 
     exp_data.save_to_folder(path=str(d))
 
-    exp_data, pulse_parameters, unitaries, expectations, pulse_sequence, simulator = (
-        isq.utils.helper.load_data_from_path(
+    # exp_data, pulse_parameters, unitaries, expectations, pulse_sequence, simulator = (
+    #     isq.utils.helper.load_data_from_path(
+    #         d,
+    #     )
+    # )
+
+    loaded_data = isq.utils.helper.load_data_from_path(
             d,
         )
-    )
+
+    exp_data = loaded_data.experiment_data
+    pulse_parameters = loaded_data.pulse_parameters
+    unitaries = loaded_data.unitaries
+    expectations = loaded_data.expectation_values
+    pulse_sequence = loaded_data.pulse_sequence
+    simulator = loaded_data.whitebox
+
+
     # NOTE: flatten the pulse_parameters
     pulse_parameters = pulse_parameters.reshape(SAMPLE_SIZE, -1)
 
@@ -174,11 +187,10 @@ def test_end_to_end(tmp_path):
         ACCUMULATION_SIZE=2,
     )
 
-    train_dataloader, val_dataloader = isq.data.prepare_dataset(
+    train_dataloader, val_dataloader, test_dataloader = isq.data.prepare_dataset(
         pulse_parameters=pulse_parameters,
         unitaries=unitaries,
         expectation_values=expectations,
-        key=random_split_key,
     )
 
     model_params, opt_state, history = isq.model.train_model(
@@ -187,6 +199,7 @@ def test_end_to_end(tmp_path):
         optimiser=optimiser,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
+        test_dataloader=test_dataloader,
         num_epoch=2,
         lr_transformer=transform,
     )

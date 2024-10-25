@@ -4,6 +4,11 @@ from flax.typing import VariableDict
 from jaxtyping import Array, Complex, Float
 import optax # type: ignore
 from dataclasses import dataclass
+from enum import Enum
+
+class LossChoice(Enum):
+    MSEE = "MSEE"
+    MAEF = "MAEF"
 
 
 ParametersDictType = dict[str, float]
@@ -53,9 +58,18 @@ class HistoryEntry:
     batch_loss: float
     global_step: int
     epoch_loss: float | None = None
+    test_loss: float | None = None
     val_loss: float | None = None
     lr: float | None = None
     
+
+@dataclass
+class HistoryEntryV2(dict):
+    MSEE: float | None
+    MAEF: float | None
+    step: int
+    epoch: int
+    loop: str
 
 
 class CallbackFn(Protocol):

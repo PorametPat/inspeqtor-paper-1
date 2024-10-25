@@ -11,4 +11,6 @@ from . import (
     optimizer,
     visualization,
     decorator,
+    model_v2,
+    torch,
 )

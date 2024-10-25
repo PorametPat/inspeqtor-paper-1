@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from qiskit_ibm_runtime.fake_provider import FakeJakartaV2  # type: ignore
-
+import qiskit.quantum_info as qi
 import inspeqtor as isq
 
 jax.config.update("jax_enable_x64", True)
@@ -369,7 +369,7 @@ def test_forest_process_tomography(gate_with_fidelity: list[jnp.ndarray]):
         rho_i = jnp.array(isq.data.State.from_label(exp.initial_state, dm=True))
         rho_f = ot.apply_kraus_ops_2_state(gate, rho_i)
 
-        exp.expectation_value = jnp.trace(rho_f @ exp.observable_matrix).real
+        exp.expectation_value = jnp.trace(jnp.array(rho_f @ exp.observable_matrix)).real
         expvals.append(exp)
 
     est_superoperator = ot.choi2superop(isq.physics.forest_process_tomography(expvals))
@@ -380,3 +380,52 @@ def test_forest_process_tomography(gate_with_fidelity: list[jnp.ndarray]):
         ),
         expected_fidelity,
     )
+
+
+def test_direct_AFG_estimation_coefficients():
+
+    # The order is [XX(+1), XX(-1), XY(+1), XY(-1), ...]
+    expected_sx_coefficients = jnp.array(
+        [
+            1,
+            -1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            -1,
+            1,
+            0,
+            0,
+            1,
+            -1,
+            0,
+            0,
+        ]
+    )
+
+    coefficients = isq.model.direct_AFG_estimation_coefficients(isq.constant.SX)
+
+    assert jnp.allclose(coefficients, expected_sx_coefficients)
+
+
+def test_direct_AFG_estimation():
+
+    target_unitary = jnp.array(qi.random_unitary(2).data)
+
+    expvals = []
+    for exp in isq.utils.predefined.default_expectation_values_order:
+        expval = isq.model.calculate_exp(
+            target_unitary, exp.observable_matrix, exp.initial_statevector
+        )
+        expvals.append(expval)
+
+    coefficients = isq.model.direct_AFG_estimation_coefficients(target_unitary)
+
+    AFG = isq.model.direct_AFG_estimation(coefficients, jnp.array(expvals))
+
+    assert jnp.allclose(AFG, 1)

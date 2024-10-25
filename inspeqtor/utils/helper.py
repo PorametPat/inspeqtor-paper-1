@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 from functools import partial
-from pathlib import Path
 from os import PathLike
 import numpy as np
 import logging
@@ -9,23 +8,29 @@ import typing
 
 from enum import Enum
 from functools import partial
+from dataclasses import dataclass
 import pandas as pd  # type: ignore
 
-from ..model import calculate_exp
+from ..model import calculate_exp, BasicBlackBox
 from .predefined import (
     MultiDragPulseV2,
+    MultiDragPulseV3,
     JaxDragPulse,
     DragPulse,
     rotating_transmon_hamiltonian,
     get_mock_prefined_exp_v1,
     default_expectation_values_order,
+    detune_hamiltonian,
+    get_multi_drag_pulse_sequence_v3,
+    get_multi_drag_pulse_sequence_v2,
+    get_mock_qubit_information,
 )
 from ..pulse import (
     JaxBasedPulseSequence,
     construct_pulse_sequence_reader,
     list_of_params_to_array,
 )
-from ..data import ExperimentData, State, make_row
+from ..data import ExperimentData, State, make_row, ExpectationValue, QubitInformation
 from ..physics import signal_func_v3, solver, SignalParameters
 from ..decorator import not_yet_tested
 
@@ -44,26 +49,55 @@ def retrieve_keys(MASTER_KEY_SEED: int):
     )
 
 
+@dataclass
+class SpecQPRNGKey:
+    pulse_key: jnp.ndarray
+    random_split_key: jnp.ndarray
+    model_key: jnp.ndarray
+    dropout_key: jnp.ndarray
+    gate_optimization_key: jnp.ndarray
+
+
+def generate_keys(MASTER_KEY_SEED: int) -> SpecQPRNGKey:
+    master_key = jax.random.key(MASTER_KEY_SEED)
+    pulse_random_split_key, random_split_key, model_key, dropout_key, gate_optim_key = (
+        jax.random.split(master_key, 5)
+    )
+
+    return SpecQPRNGKey(
+        pulse_key=pulse_random_split_key,
+        random_split_key=random_split_key,
+        model_key=model_key,
+        dropout_key=dropout_key,
+        gate_optimization_key=gate_optim_key,
+    )
+
+
 def check_diagonal_matrix(matrix):
     return jnp.count_nonzero(matrix - jnp.diag(jnp.diagonal(matrix))) == 0
 
 
 pulse_reader = construct_pulse_sequence_reader(
-    pulses=[DragPulse, JaxDragPulse, MultiDragPulseV2]
+    pulses=[DragPulse, JaxDragPulse, MultiDragPulseV2, MultiDragPulseV3]
 )
+
+
+@dataclass
+class LoadedData:
+    experiment_data: ExperimentData
+    pulse_parameters: jnp.ndarray
+    unitaries: jnp.ndarray
+    expectation_values: jnp.ndarray
+    pulse_sequence: JaxBasedPulseSequence
+    whitebox: typing.Callable
+    noisy_whitebox: typing.Callable = None
+    noisy_unitaries: jnp.ndarray = None
 
 
 def prepare_data(
     exp_data: ExperimentData,
     pulse_sequence: JaxBasedPulseSequence,
-) -> tuple[
-    ExperimentData,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    JaxBasedPulseSequence,
-    typing.Callable,
-]:
+) -> LoadedData:
     dt = exp_data.experiment_config.device_cycle_time_ns
     qubit_info = exp_data.experiment_config.qubits[0]
 
@@ -111,26 +145,19 @@ def prepare_data(
     pulse_parameters = exp_data.parameters
     expectations = exp_data.get_expectation_values()
 
-    return (
-        exp_data,
-        pulse_parameters,
-        np_unitaries,
-        expectations,
-        pulse_sequence,
-        jiited_simulator,
+    return LoadedData(
+        experiment_data=exp_data,
+        pulse_parameters=pulse_parameters,
+        unitaries=np_unitaries,
+        expectation_values=expectations,
+        pulse_sequence=pulse_sequence,
+        whitebox=jiited_simulator,
     )
 
 
 def load_data_from_path(
     path: PathLike,
-) -> tuple[
-    ExperimentData,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    JaxBasedPulseSequence,
-    typing.Callable,
-]:
+) -> LoadedData:
 
     # Load the data from the experiment
     exp_data = ExperimentData.from_folder(path)
@@ -173,10 +200,12 @@ def test_calculate_shots_expectation_value(
         key=sample_key,
         initial_state=initial_state,
         # unitary=unitaries[0][-1],
-        unitary=jnp.eye(2),
+        unitary=jnp.eye(2, dtype=jnp.complex64),
         plus_projector=projector,
         shots=3000,
     )
+
+    assert -1 <= expval <= 1, f"Expectation value is {expval}"
 
 
 plus_projectors = {
@@ -192,10 +221,20 @@ def generate_mock_experiment_data(
     sample_size: int = 10,
     shots: int = 1000,
     strategy: SimulationStrategy = SimulationStrategy.RANDOM,
+    detune: float = 0,
+    get_qubit_information_fn: typing.Callable[
+        [], QubitInformation
+    ] = get_mock_qubit_information,
+    get_pulse_sequence_fn: typing.Callable[
+        [], JaxBasedPulseSequence
+    ] = get_multi_drag_pulse_sequence_v2,
 ):
 
     qubit_info, pulse_sequence, config = get_mock_prefined_exp_v1(
-        sample_size=sample_size, shots=shots
+        sample_size=sample_size,
+        shots=shots,
+        get_pulse_sequence_fn=get_pulse_sequence_fn,
+        get_qubit_information_fn=get_qubit_information_fn,
     )
 
     # Generate mock expectation value
@@ -216,6 +255,10 @@ def generate_mock_experiment_data(
         ),
     )
 
+    if detune != 0:
+        # Detune the hamiltonian
+        hamiltonian = detune_hamiltonian(hamiltonian, detune)
+
     jiited_simulator = jax.jit(
         partial(
             solver,
@@ -230,18 +273,14 @@ def generate_mock_experiment_data(
     SHOTS = config.shots
 
     rows = []
-    # manual_pulse_params_array = []
     pulse_params_list = []
     signal_params_list: list[SignalParameters] = []
-    parameter_structure = pulse_sequence.get_parameter_names()
+    # parameter_structure = pulse_sequence.get_parameter_names()
     for sample_idx in range(config.sample_size):
 
         key, subkey = jax.random.split(key)
         pulse_params = pulse_sequence.sample_params(subkey)
         pulse_params_list.append(pulse_params)
-        # manual_pulse_params_array.append(
-        #     list_of_params_to_array(pulse_params, parameter_structure)
-        # )
 
         signal_param = SignalParameters(pulse_params=pulse_params, phase=0)
         signal_params_list.append(signal_param)
@@ -339,3 +378,59 @@ def theoretical_fidelity_of_amplitude_dampling_channel_with_itself(gamma):
     process_fidelity = 1 - gamma + (gamma**2) / 2
 
     return (2 * process_fidelity + 1) / (2 + 1)
+
+
+def variance_of_observable(expval: jnp.ndarray, shots: int = 1):
+    return (1 - expval**2) / shots
+
+
+def is_initail_state(exp: ExpectationValue, initial_state: str) -> bool:
+    return exp.initial_state == initial_state
+
+
+def pick_initial_state(initial_state: str) -> callable:
+    return lambda exp: is_initail_state(exp, initial_state)
+
+
+def is_observable(exp: ExpectationValue, observable: str) -> bool:
+    return exp.observable == observable
+
+
+def pick_observable(observable: str) -> callable:
+    return lambda exp: is_observable(exp, observable)
+
+
+def is_initial_state_and_observable(
+    exp: ExpectationValue, initial_state: str, observable: str
+) -> bool:
+    return is_initail_state(exp, initial_state) and is_observable(exp, observable)
+
+
+def pick_initial_state_and_observable(initial_state: str, observable: str) -> callable:
+    return lambda exp: is_initial_state_and_observable(exp, initial_state, observable)
+
+
+# A function that returns a list of index corresponding to the list of conditions
+def get_index(exp_vals: list[ExpectationValue], conditions=list[callable]) -> list[int]:
+    return [
+        i
+        for i, exp_val in enumerate(exp_vals)
+        if any([cond(exp_val) for cond in conditions])
+    ]
+
+
+def model_summary(model: BasicBlackBox, pulse_sequence: JaxBasedPulseSequence):
+
+    sample_params = pulse_sequence.sample_params(jax.random.PRNGKey(0))
+
+    # trainable parameters count
+    return model.tabulate(
+        jax.random.PRNGKey(0),
+        jnp.expand_dims(
+            list_of_params_to_array(
+                sample_params, pulse_sequence.get_parameter_names()
+            ),
+            0,
+        ),
+        training=False,
+    )
