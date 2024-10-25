@@ -2,7 +2,7 @@ from qiskit_ibm_runtime.fake_provider import FakeJakartaV2  # type: ignore
 import jax
 import jax.numpy as jnp
 from functools import partial
-from qiskit_ibm_runtime import SamplerV2, SamplerV1, Options  # type: ignore
+from qiskit_ibm_runtime import SamplerV2, Options  # type: ignore
 import inspeqtor as isq
 
 
@@ -81,7 +81,7 @@ def test_execute_experiment_using_fake_backend_v2():
         twirling=dict(enable_gates=False, enable_measure=False),
     )
 
-    Sampler = SamplerV2 if backend_properties.is_simulator else SamplerV1
+    Sampler = SamplerV2
     options = options_v2 if backend_properties.is_simulator else options_v1
 
     execute_dataframe, jobs = isq.qiskit.execute_experiment(
