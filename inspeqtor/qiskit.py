@@ -847,7 +847,7 @@ def execute_parallel_experiment(
     with Session(
         service=service, backend=backend_properties.backend_instance
     ) as session:
-        sampler = SamplerV2(mode=session, options=options, session=session)
+        sampler = SamplerV2(mode=session, options=options)
 
         for job_idx in alive_it(range(total_jobs)):
             # Get the start and end index for the circuits

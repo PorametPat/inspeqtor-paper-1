@@ -73,25 +73,26 @@ def test_end_to_end(tmp_path):
         circuits, backend_properties.backend_instance, inital_layout=[QUBIT_IDX]
     )
 
-    options_v1 = Options(
-        optimization_level=0,
-        resilience_level=0,
-        execution=dict(  # type: ignore
-            shots=SHOTS,
-        ),
-        transpilation=dict(  # type: ignore
-            skip_transpilation=True,
-        ),
-    )
+    # options_v1 = Options(
+    #     optimization_level=0,
+    #     resilience_level=0,
+    #     execution=dict(  # type: ignore
+    #         shots=SHOTS,
+    #     ),
+    #     transpilation=dict(  # type: ignore
+    #         skip_transpilation=True,
+    #     ),
+    # )
 
-    options_v2 = dict(
-        default_shots=SHOTS,
-        dynamical_decoupling=dict(enable=False),
-        twirling=dict(enable_gates=False, enable_measure=False),
-    )
+    # options_v2 = dict(
+    #     default_shots=SHOTS,
+    #     dynamical_decoupling=dict(enable=False),
+    #     twirling=dict(enable_gates=False, enable_measure=False),
+    # )
 
     Sampler = SamplerV2 
-    options = options_v2 if backend_properties.is_simulator else options_v1
+    # options = options_v2# if backend_properties.is_simulator else options_v1
+    options = isq.qiskit.make_sampler_options(shots=SHOTS)
 
     execute_dataframe, jobs = isq.qiskit.execute_experiment(
         df, backend_properties, options, transpiled_circuits, service, Sampler
