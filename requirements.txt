@@ -4,18 +4,18 @@
 
 # external requirements
 pennylane
-jax 
-jaxlib
+jax==0.4.30
+jaxlib==0.4.30
 pandas
 optax
-flax
+flax==0.8.5
 jaxopt
 torch
 qiskit
-jaxtyping
+jaxtyping==0.2.31
 matplotlib
 orbax-checkpoint
-diffrax
+diffrax==0.6.0
 alive-progress
 qiskit-aer
 qiskit_ibm_runtime

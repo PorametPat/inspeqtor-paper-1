@@ -95,6 +95,8 @@ def solver(
     y0: jnp.ndarray,
     t0: float,
     t1: float,
+    rtol: float = 1e-7,
+    atol: float = 1e-7,
     max_steps: int = int(2**16),
 ):
 
@@ -116,8 +118,8 @@ def solver(
         t1=t1,
         dt0=None,
         stepsize_controller=diffrax.PIDController(
-            rtol=1e-7,
-            atol=1e-7,
+            rtol=rtol,
+            atol=atol,
         ),
         y0=y0,
         args=args,
@@ -371,6 +373,28 @@ def signal_func_v3(get_envelope: typing.Callable, drive_frequency: float, dt: fl
         )
 
     return signal
+
+def signal_func_v5(get_envelope: typing.Callable, drive_frequency: float, dt: float):
+    """Make the envelope function into signal with drive frequency
+
+    Args:
+        get_envelope (Callable): The envelope function in unit of dt
+        drive_frequency (float): drive freuqency in unit of GHz
+        dt (float): The dt provived will be used to convert envelope unit to ns,
+                    set to 1 if the envelope function is already in unit of ns
+    """
+
+    def signal(pulse_parameters: list[dict[str, float]], t: jnp.ndarray):
+        return jnp.real(
+            get_envelope(pulse_parameters)(t / dt)
+            * jnp.exp(
+                1j * (2 * jnp.pi * drive_frequency * t)
+            )
+        )
+
+    return signal
+
+
 
 
 def gate_fidelity(U: jnp.ndarray, V: jnp.ndarray) -> jnp.ndarray:

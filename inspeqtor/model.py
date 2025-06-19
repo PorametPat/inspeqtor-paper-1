@@ -179,6 +179,51 @@ class BasicBlackBox(nn.Module):
             }
 
         return Wos_params
+    
+class BasicBlackBoxV2(nn.Module):
+    feature_size: int
+    hidden_sizes_1: Sequence[int] = (20, 10)
+    hidden_sizes_2: Sequence[int] = (20, 10)
+    pauli_operators: Sequence[str] = ("X", "Y", "Z")
+
+    NUM_UNITARY_PARAMS: int = 3
+    NUM_DIAGONAL_PARAMS: int = 2
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray):
+        # x = nn.Dense(features=self.feature_size)(x)
+        # Apply a activation function
+        # x = nn.relu(x)
+        # Dropout
+        # x = nn.Dropout(0.2)(x)
+        # Apply a dense layer for each hidden size
+        for hidden_size in self.hidden_sizes_1:
+            x = nn.Dense(features=hidden_size)(x)
+            x = nn.relu(x)
+
+        Wos_params: dict[str, dict[str, jnp.ndarray]] = dict()
+        for op in self.pauli_operators:
+            # Sub hidden layer
+            for hidden_size in self.hidden_sizes_2:
+                _x = nn.Dense(features=hidden_size)(x)
+                _x = nn.relu(_x)
+
+            Wos_params[op] = dict()
+            # For the unitary part, we use a dense layer with 3 features
+            unitary_params = nn.Dense(features=self.NUM_UNITARY_PARAMS)(_x)
+            # Apply sigmoid to this layer
+            unitary_params = 2 * jnp.pi * nn.sigmoid(unitary_params)
+            # For the diagonal part, we use a dense layer with 1 feature
+            diag_params = nn.Dense(features=self.NUM_DIAGONAL_PARAMS)(_x)
+            # Apply the activation function
+            diag_params = nn.tanh(diag_params)
+
+            Wos_params[op] = {
+                "U": unitary_params,
+                "D": diag_params,
+            }
+
+        return Wos_params
 
 
 class MLPBlackBox(nn.Module):
@@ -420,9 +465,53 @@ def Wo_2_level(
     lambda_1 = D[0]
     lambda_2 = D[1]
 
+    # q_00 = jnp.exp(1j * alpha) * jnp.cos(theta)
+    # q_01 = jnp.exp(1j * beta) * jnp.sin(theta)
+    # q_10 = jnp.exp(-1j * beta) * jnp.sin(theta)
+    # # NOTE: The minus sign at q_11 is in q_10 in wikipedia
+    # # But the resulting matrix still being Unitary matrix
+    # q_11 = -jnp.exp(-1j * alpha) * jnp.cos(theta)
+
+    q_00 = jnp.exp(1j * alpha) * jnp.cos(theta)
+    q_01 = jnp.exp(1j * beta) * jnp.sin(theta)
+    q_10 = -jnp.exp(-1j * beta) * jnp.sin(theta)
+    # NOTE: The minus sign at q_11 is in q_10 in wikipedia
+    # But the resulting matrix still being Unitary matrix
+    q_11 = jnp.exp(-1j * alpha) * jnp.cos(theta)
+
+    Q = jnp.array([[q_00, q_01], [q_10, q_11]])
+
+    _D = jnp.array([[lambda_1, 0], [0, lambda_2]])
+
+    return Q @ _D @ Q.T.conj()
+
+
+def Wo_2_level_paper_1(
+    U: jnp.ndarray,
+    D: jnp.ndarray,
+) -> jnp.ndarray:
+    """This function is the version used in the v6 experiment.
+
+    Args:
+        U (jnp.ndarray): shape (3, ) array for alpha, theta, beta
+        D (jnp.ndarray): shape (2, ) array for lambda_1, lambda_1
+
+    Returns:
+        jnp.ndarray: The the W_{O} matrix.
+    """
+
+    alpha = U[0]
+    theta = U[1]
+    beta = U[2]
+
+    lambda_1 = D[0]
+    lambda_2 = D[1]
+
     q_00 = jnp.exp(1j * alpha) * jnp.cos(theta)
     q_01 = jnp.exp(1j * beta) * jnp.sin(theta)
     q_10 = jnp.exp(-1j * beta) * jnp.sin(theta)
+    # NOTE: The minus sign at q_11 is in q_10 in wikipedia
+    # But the resulting matrix still being Unitary matrix
     q_11 = -jnp.exp(-1j * alpha) * jnp.cos(theta)
 
     Q = jnp.array([[q_00, q_01], [q_10, q_11]])
@@ -436,13 +525,14 @@ def get_predict_expectation_value(
     Wos_params: dict[str, dict[str, jnp.ndarray]],
     unitaries: jnp.ndarray,
     evaluate_expectation_values: list[ExpectationValue],
+    Wo_2_level_fn: typing.Callable = Wo_2_level_paper_1,
 ) -> jnp.ndarray:
 
     predict_expectation_values = []
 
     # Calculate expectation values for all cases
     for _, exp_case in enumerate(evaluate_expectation_values):
-        Wo = jax.vmap(Wo_2_level, in_axes=(0, 0))(
+        Wo = jax.vmap(Wo_2_level_fn, in_axes=(0, 0))(
             Wos_params[exp_case.observable]["U"], Wos_params[exp_case.observable]["D"]
         )
         # Calculate expectation value for each pauli operator

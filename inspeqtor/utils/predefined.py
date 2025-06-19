@@ -150,10 +150,10 @@ def get_multi_drag_pulse_sequence_v2(
     min_beta: float = -2,
     max_beta: float = 2,
     total_num_order: int = 4,
+    sigma_range: list[tuple[float, float]] = [(7, 9), (5, 7), (3, 5), (1, 3)],
 ) -> JaxBasedPulseSequence:
 
     pulse_length_dt = 80
-    sigma_range = [(7, 9), (5, 7), (3, 5), (1, 3)]
 
     pulse_sequence = JaxBasedPulseSequence(
         pulses=[
@@ -438,6 +438,7 @@ def rotating_transmon_hamiltonian(
     f_sigma_y = lambda _params, t: f3(_params, t) * jnp.sin(a0 * t)
 
     return f_sigma_x(params, t) * X - f_sigma_y(params, t) * Y
+
 
 
 def transmon_hamiltonian(

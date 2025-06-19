@@ -20,8 +20,8 @@ def draw_complex_pulse(
 
     assert ax is not None
 
-    ax.bar(x_axis, jnp.real(waveform), label="real", color="orange", alpha=0.5)
-    ax.bar(x_axis, jnp.imag(waveform), label="imag", color="blue", alpha=0.5)
+    ax.bar(x_axis, jnp.real(waveform), label="Real component", color="orange", alpha=0.5)
+    ax.bar(x_axis, jnp.imag(waveform), label="Imag component", color="blue", alpha=0.5)
 
     ax.set_xlabel("Time", fontsize=font_size)
 
@@ -33,7 +33,7 @@ def draw_complex_pulse(
     ax.set_xlabel("Time (dt)", fontsize=font_size)
     ax.set_ylabel("Amplitude", fontsize=font_size)
 
-    ax.legend(fontsize=font_size)
+    ax.legend(fontsize=font_size, loc="upper right")
 
     if not has_ax:
 

@@ -1,0 +1,145 @@
+{
+    "qubits": [
+        {
+            "unit": "GHz",
+            "qubit_idx": 2,
+            "anharmonicity": -0.30547207120472913,
+            "frequency": 5.081333859960893,
+            "drive_strength": 0.10325922069245988,
+            "date": "2024-09-16 01:10:52"
+        }
+    ],
+    "expectation_values_order": [
+        {
+            "initial_state": "+",
+            "observable": "X",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "-",
+            "observable": "X",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "r",
+            "observable": "X",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "l",
+            "observable": "X",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "0",
+            "observable": "X",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "1",
+            "observable": "X",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "+",
+            "observable": "Y",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "-",
+            "observable": "Y",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "r",
+            "observable": "Y",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "l",
+            "observable": "Y",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "0",
+            "observable": "Y",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "1",
+            "observable": "Y",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "+",
+            "observable": "Z",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "-",
+            "observable": "Z",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "r",
+            "observable": "Z",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "l",
+            "observable": "Z",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "0",
+            "observable": "Z",
+            "expectation_value": null
+        },
+        {
+            "initial_state": "1",
+            "observable": "Z",
+            "expectation_value": null
+        }
+    ],
+    "parameter_names": [
+        [
+            "0/0/amp",
+            "0/0/sigma",
+            "1/0/amp",
+            "1/0/sigma",
+            "1/1/amp",
+            "1/1/sigma",
+            "2/0/amp",
+            "2/0/sigma",
+            "2/1/amp",
+            "2/1/sigma",
+            "2/2/amp",
+            "2/2/sigma",
+            "3/0/amp",
+            "3/0/sigma",
+            "3/1/amp",
+            "3/1/sigma",
+            "3/2/amp",
+            "3/2/sigma",
+            "3/3/amp",
+            "3/3/sigma",
+            "beta"
+        ]
+    ],
+    "backend_name": "ibm_kawasaki",
+    "shots": 3000,
+    "EXPERIMENT_IDENTIFIER": "q2",
+    "EXPERIMENT_TAGS": [
+        "q2"
+    ],
+    "description": "The experiment to test random drag sequence",
+    "device_cycle_time_ns": 0.2222222222222222,
+    "sequence_duration_dt": 80,
+    "instance": "utokyo-kawasaki/keio-internal/keio-students",
+    "sample_size": 1000,
+    "date": "2024-09-16 01:10:52",
+    "additional_info": {
+        "MASTER_KEY_SEED": 2,
+        "TARGET_GATE": "SX_v2"
+    }
+}

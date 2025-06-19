@@ -2,7 +2,7 @@ from qiskit_ibm_runtime.fake_provider import FakeJakartaV2  # type: ignore
 import jax
 import jax.numpy as jnp
 from functools import partial
-from qiskit_ibm_runtime import SamplerV2, Options  # type: ignore
+from qiskit_ibm_runtime import SamplerV2  # type: ignore
 import inspeqtor as isq
 
 
@@ -64,29 +64,11 @@ def test_execute_experiment_using_fake_backend_v2():
         circuits, backend_properties.backend_instance, inital_layout=[QUBIT_IDX]
     )
 
-    # options_v1 = Options(
-    #     optimization_level=0,
-    #     resilience_level=0,
-    #     execution=dict(  # type: ignore
-    #         shots=SHOTS,
-    #     ),
-    #     transpilation=dict(  # type: ignore
-    #         skip_transpilation=True,
-    #     ),
-    # )
-
-    # options_v2 = dict(
-    #     default_shots=SHOTS,
-    #     dynamical_decoupling=dict(enable=False),
-    #     twirling=dict(enable_gates=False, enable_measure=False),
-    # )
-
-    Sampler = SamplerV2
     # options = options_v2 # if backend_properties.is_simulator else options_v1
     options = isq.qiskit.make_sampler_options(shots=SHOTS)
 
     execute_dataframe, jobs = isq.qiskit.execute_experiment(
-        df, backend_properties, options, transpiled_circuits, service, Sampler
+        df, backend_properties, options, transpiled_circuits, service, SamplerV2
     )
 
     _jobs, is_all_done, is_error, num_done = isq.qiskit.check_jobs_status(
